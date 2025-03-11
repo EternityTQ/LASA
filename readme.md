@@ -68,11 +68,13 @@ More detailed hyperparameters are presented in the paper and you can find them i
 ## Citation
 If you find our repository is useful for your work, please cite our work:
 ```
-@article{xu2024achieving,
-  title={Achieving Byzantine-Resilient Federated Learning via Layer-Adaptive Sparsified Model Aggregation},
-  author={Xu, Jiahao and Zhang, Zikai and Hu, Rui},
-  journal={arXiv preprint arXiv:2409.01435},
-  year={2024}
+@InProceedings{Xu_2025_WACV,
+    author    = {Xu, Jiahao and Zhang, Zikai and Hu, Rui},
+    title     = {Achieving Byzantine-Resilient Federated Learning via Layer-Adaptive Sparsified Model Aggregation},
+    booktitle = {Proceedings of the Winter Conference on Applications of Computer Vision (WACV)},
+    month     = {February},
+    year      = {2025},
+    pages     = {1508-1517}
 }
 ```
     
