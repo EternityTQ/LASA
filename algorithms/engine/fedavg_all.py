@@ -8,6 +8,11 @@ from utils.data_pre_process import load_partition, DatasetSplit
 from utils.model_utils import model_setup
 from utils.mask_help import *
 from test import test_img
+try:
+    from test import test_img_setapgd
+    _HAS_SETAPGD_TEST = True
+except Exception:
+    _HAS_SETAPGD_TEST = False
 
 from ..solver.local_solver import LocalUpdate
 from ..solver.global_aggregator import average
@@ -22,6 +27,67 @@ from ..defense.dnc import dnc
 import time
 
 from ..attack import attack
+
+# [新增辅助函数] 计算针对翻转标签的代理损失指导梯度
+def compute_surrogate_guidance(net_glob, dataloader, device, num_of_label):
+    net_glob.eval() # 使用 eval 模式提取精确梯度
+    net_glob.zero_grad()
+    criterion_ce = torch.nn.CrossEntropyLoss().to(device)
+    
+    # 1. 抽取恶意客户端的一个 Batch 的真实数据
+    images, labels = next(iter(dataloader))
+    images = images.to(device)
+    # 模拟 Label Flip 攻击（与你 local_solver 中的逻辑保持绝对一致）
+    target_labels = (num_of_label - labels).to(device) 
+    
+    outputs = net_glob(images)
+    
+    # -----------------------------------------
+    # 代理目标 1：Cross Entropy (CE) 梯度
+    # -----------------------------------------
+    loss_ce = criterion_ce(outputs, target_labels)
+    loss_ce.backward(retain_graph=True)
+    
+    # 提取梯度，注意要和 state_dict 的 keys 严格对齐 (跳过诸如 running_mean 等无需梯度的 buffer)
+    param_grads_ce = {name: param.grad.clone() for name, param in net_glob.named_parameters() if param.grad is not None}
+    g_ce_list = []
+    for k in net_glob.state_dict().keys():
+        if k in param_grads_ce:
+            g_ce_list.append(param_grads_ce[k].flatten())
+        else:
+            g_ce_list.append(torch.zeros_like(net_glob.state_dict()[k]).flatten())
+            
+    # 因为我们想要 *最小化* 翻转标签的 CE Loss，所以梯度更新方向应该是负梯度 (-gradient)
+    g_ce = -torch.cat(g_ce_list) 
+    
+    net_glob.zero_grad()
+    
+    # -----------------------------------------
+    # 代理目标 2：Margin Loss (CW) 梯度
+    # -----------------------------------------
+    correct_logits = torch.gather(outputs, 1, target_labels.unsqueeze(1)).squeeze(1)
+    outputs_clone = outputs.clone()
+    outputs_clone.scatter_(1, target_labels.unsqueeze(1), -1e4)
+    max_other_logits, _ = torch.max(outputs_clone, dim=1)
+    
+    # CW Loss: 强迫目标类别的得分远超第二名
+    loss_cw = torch.mean(torch.relu(max_other_logits - correct_logits + 50.0))
+    loss_cw.backward()
+    
+    param_grads_cw = {name: param.grad.clone() for name, param in net_glob.named_parameters() if param.grad is not None}
+    g_cw_list = []
+    for k in net_glob.state_dict().keys():
+        if k in param_grads_cw:
+            g_cw_list.append(param_grads_cw[k].flatten())
+        else:
+            g_cw_list.append(torch.zeros_like(net_glob.state_dict()[k]).flatten())
+            
+    # 同理，想要 *最小化* CW Loss，更新方向为负梯度
+    g_cw = -torch.cat(g_cw_list) 
+    
+    net_glob.zero_grad()
+    
+    return g_ce, g_cw
 
 def fedavg_all(args):
     ################################### hyperparameter setup ########################################
@@ -188,8 +254,20 @@ def fedavg_all(args):
         
 
         ################## <<< Attack Point 2: local model poisoning attacks
+        ################## <<< Attack Point 2: local model poisoning attacks
         if malicious_attackers_this_round != 0:
-            local_updates = attack_method(local_updates, args, malicious_attackers_this_round)
+            if args.attack == 'mos_attack' or 'mos' in args.attack: # 请根据你实际传的 args.attack 名字修改
+                # 随便找一个参与了本轮攻击的恶意客户端，拿他的数据生成指导梯度
+                malicious_client_idx = [idx for idx in selected_idxs if idx in attacked_idxs][0]
+                ldr_malicious = data_loader_list[malicious_client_idx]
+                
+                # 提取语义破坏的指导梯度
+                g_ce, g_cw = compute_surrogate_guidance(net_glob, ldr_malicious, args.device, num_of_label)
+                
+                # 传给 MOS-Attack
+                local_updates = attack_method(local_updates, args, malicious_attackers_this_round, g_ce=g_ce, g_cw=g_cw)
+            else:
+                local_updates = attack_method(local_updates, args, malicious_attackers_this_round)
         
         ## robust/non-robust global aggregation
         if args.attack:
@@ -237,16 +315,38 @@ def fedavg_all(args):
 
         ## test global model on server side
         net_glob.load_state_dict(global_model)
+
+        # Clean accuracy (no gradients needed)
         with torch.no_grad():
             test_acc, _ = test_img(net_glob, dataset_test, args)
 
-            with open(args.exp_record, 'a') as f:
-                f.write('At round %d: the global model accuracy is %.5f' % (t, test_acc) + '\n')
+        # Optional: adversarial (SetAPGD) robust accuracy (needs gradients)
+        robust_acc = None
+        if getattr(args, 'eval_setapgd', 0) and _HAS_SETAPGD_TEST:
+            robust_acc = test_img_setapgd(
+                net_glob, dataset_test, args,
+                eps=getattr(args, 'setapgd_eps', 8/255),
+                steps=getattr(args, 'setapgd_steps', 50),
+                K=getattr(args, 'setapgd_K', 5),
+                norm=getattr(args, 'setapgd_norm', 'Linf'),
+                loss_num=getattr(args, 'setapgd_loss_num', 8),
+                n_restarts=getattr(args, 'setapgd_restarts', 1),
+            )
 
-                if t == args.round - 1:
-                    f.write('-----' + '\n')
-        print('t {:3d}: train_loss = {:.3f}, test_acc = {:.3f}'.
-              format(t, train_loss, test_acc))
+        with open(args.exp_record, 'a') as f:
+            msg = 'At round %d: the global model accuracy is %.5f' % (t, test_acc)
+            if robust_acc is not None:
+                msg += ' | SetAPGD robust acc: %.5f' % (robust_acc)
+            f.write(msg + '\n')
+
+            if t == args.round - 1:
+                f.write('-----' + '\n')
+        if robust_acc is None:
+            print('t {:3d}: train_loss = {:.3f}, test_acc = {:.3f}'.
+                  format(t, train_loss, test_acc))
+        else:
+            print('t {:3d}: train_loss = {:.3f}, test_acc = {:.3f} | SetAPGD robust_acc = {:.3f}'.
+                  format(t, train_loss, test_acc, robust_acc))
         
         if best_test_accuracy < test_acc:
             best_test_accuracy = test_acc

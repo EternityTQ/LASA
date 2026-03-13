@@ -2,7 +2,9 @@ import torch, random, argparse, os, copy
 import numpy as np
 from algorithms.engine.fedavg_all import fedavg_all
 from mmengine.config import Config
-
+import os
+# 允许显存分配器使用扩展段来减少碎片
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 def merge_config(config, args):
     for arg in vars(args):
@@ -13,7 +15,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu',
                         type=int,
-                        default=0,
+                        default=2,
                         help="GPU ID, -1 for CPU")
     parser.add_argument('--seed',
                         type=int,
@@ -25,7 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_attackers', type=int, default=20, help='Bayzatine attckers')
     parser.add_argument('--beta', type=float, default=0, help='ema')
     parser.add_argument('--attack', type=str, default='agrTailoredTrmean', help='attack method', choices=['agrTailoredTrmean', 'agrAgnosticMinMax', 'agrAgnosticMinSum', 'signflip_attack', 'noise_attack', \
-                'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack'])
+                'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack','mos_attack'])
     parser.add_argument('--defend', type=str, default='lasa', help='defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed'])
 
     parser.add_argument('--dataset', type=str, default='cifar', help='dataset')
@@ -53,7 +55,10 @@ if __name__ == '__main__':
     if meta_args.defend == 'sparsefed':
         meta_args.com_p = 1 - meta_args.sparsity
 
-    meta_args.device = torch.device('cuda')
+    if meta_args.gpu != -1:
+        meta_args.device = torch.device(f'cuda:{meta_args.gpu}')
+    else:
+        meta_args.device = torch.device('cpu')
 
     if not os.path.exists(meta_args.results_dir):
         os.makedirs(meta_args.results_dir)
