@@ -214,10 +214,24 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     lower_bound = benign_min
     upper_bound = benign_max
     
+# ================= 新增：提取 Skew 攻击理论方向 =================
+    # 这个似乎有点菜，先废弃了
+    # 1. 计算中位数 (Median)
+    benign_median, _ = torch.median(benign_grads, dim=0)
+    
+    # 2. 计算偏斜方向 (Direction of Skew) [论文中的 u_search]
+    skew_direction = benign_median - benign_mean
+    
+    # 3. 归一化方向向量，防止因为原始梯度数值太小导致 Loss 梯度爆炸/消失
+    skew_dir_norm = torch.norm(skew_direction)
+    skew_dir_unit = skew_direction / (skew_dir_norm + 1e-9)
+    skew_dir_unit = skew_dir_unit.to(device)
+    # ================================================================
+    
     # ================= 关键新增区：处理传进来的指导梯度 =================
     if g_ce is not None and g_cw is not None:
         # 指导梯度只给出了最佳破坏方向，我们赋予它合适的"长度"，使其与正常梯度量级匹配
-        scale_factor = torch.norm(benign_mean) * 1.5 
+        scale_factor = torch.norm(benign_mean) * 2
         
         g_ce_unit = g_ce.to(device) / (torch.norm(g_ce.to(device)) + 1e-9)
         g_cw_unit = g_cw.to(device) / (torch.norm(g_cw.to(device)) + 1e-9)
@@ -253,6 +267,20 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         # Objective 2: 向真实的 CW 漏洞方向冲锋
         l_cw = torch.norm(malicious_set - target_cw, dim=1)
         
+        # 新代码：方向最大化 (负内积)
+        # 我们希望 malicious_set 沿着指导梯度方向走得越远越好
+        # 也就是说，(malicious_set - benign_mean) 与 指导梯度的夹角越小越好，投影越长越好
+
+        # 1. 计算当前偏离中心的方向向量
+        current_deviation = malicious_set - benign_mean
+
+        # 2. 计算与指导梯度的内积 (点乘)
+        # 内积越大，说明沿着破坏方向走得越远。为了配合框架最小化 Loss 的逻辑，我们取负数。
+        #l_ce = -torch.sum(current_deviation * g_ce_unit, dim=1)
+        #l_cw = -torch.sum(current_deviation * g_cw_unit, dim=1)
+        
+        l_skew = -torch.sum(current_deviation * skew_dir_unit, dim=1)
+        
         # Objective 3: 隐蔽性 - Krum 保护圈
         current_dist = torch.norm(malicious_set - benign_mean, dim=1)
         l_krum = torch.relu(current_dist - krum_radius)
@@ -278,7 +306,7 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         l_lasa_norm = torch.norm(excess_lasa, dim=1)
         
         # 堆叠 Loss (和原逻辑一致)
-        raw_losses = torch.stack([l_ce, l_cw, l_sign, l_lasa_norm])
+        raw_losses = torch.stack([l_ce,l_cw, l_krum, l_group,l_box])
         # ===============================================
         
         # 执行你写好的平滑极值 MOS 优化

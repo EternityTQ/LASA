@@ -23,6 +23,7 @@ from ..defense.sparsefed import sparsefed
 from ..defense.lasa import lasa
 from ..defense.signguard import signguard
 from ..defense.dnc import dnc
+from ..defense.rlr import robust_aggregation
 
 import time
 
@@ -309,6 +310,9 @@ def fedavg_all(args):
 
         elif args.defend == 'geomed':
             global_model = geomed(local_updates, global_model, args)
+            
+        elif args.defend == 'rlr':
+            global_model = robust_aggregation(local_updates, global_model, args)
 
         elif args.defend == 'fedavg':
             global_model = average(global_model, local_updates) # just fedavg
