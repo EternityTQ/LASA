@@ -196,6 +196,30 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     
     # --- 1. 数据准备 ---
     all_updates_flatten = []
+    
+    # ================= 新增 1：追踪输出层参数在 Flatten 向量中的位置 =================
+    idx_current = 0
+    idx_w_start, idx_w_end = 0, 0
+    idx_b_start, idx_b_end = 0, 0
+    num_classes = 0
+    
+    # 获取字典里的 key 列表，通常 PyTorch 字典最后两个就是输出层的 weight 和 bias
+    keys = list(all_updates[0].keys())
+    out_weight_key = keys[-2]  # 例如 'fc.weight' 或 'classifier.weight'
+    out_bias_key = keys[-1]    # 例如 'fc.bias' 或 'classifier.bias'
+    
+    for k, v in all_updates[0].items():
+        num_params = v.numel()
+        if k == out_weight_key:
+            idx_w_start = idx_current
+            idx_w_end = idx_current + num_params
+            num_classes = v.shape[0]  # 输出层的类别数（比如 CIFAR10 就是 10）
+        elif k == out_bias_key:
+            idx_b_start = idx_current
+            idx_b_end = idx_current + num_params
+        idx_current += num_params
+    # ==========================================================================
+    
     for update in all_updates:
         vec = torch.cat([torch.flatten(update[k]) for k in update.keys()])
         all_updates_flatten.append(vec)
@@ -254,7 +278,7 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     malicious_set.requires_grad = True
     
     optimizer = torch.optim.Adam([malicious_set], lr=0.1) 
-    normalizer = LossNormalizer(num_objectives=5, momentum=0.8)  # 你的代码里原有的 normalizer
+    normalizer = LossNormalizer(num_objectives=7, momentum=0.8)  # 你的代码里原有的 normalizer
     mu = 0.5 
 
     for it in range(100):
@@ -305,8 +329,37 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         excess_lasa = torch.relu(deviation - 0.1 * benign_std)
         l_lasa_norm = torch.norm(excess_lasa, dim=1)
         
+        # ================= 新增 2：计算输出层精准限幅 Loss =================
+        # 1. 切片提取我们恶意样本的输出层参数
+        # view 操作将其恢复成 (K, num_classes, in_features) 的三维形状
+        mal_out_w = malicious_set[:, idx_w_start:idx_w_end].view(K, num_classes, -1)
+        mal_out_b = malicious_set[:, idx_b_start:idx_b_end].view(K, num_classes, 1)
+        
+        # 将 weight 和 bias 拼在一起，方便一次性计算每个神经元的总梯度大小
+        mal_out_params = torch.cat([mal_out_w, mal_out_b], dim=2) 
+        
+        # 计算恶意更新中，每个神经元的 L2 范数 -> shape: (K, num_classes)
+        neuron_norms = torch.norm(mal_out_params, dim=2)
+        
+        # 2. 提取良性均值 (benign_mean) 的输出层参数作为“安全上限”
+        with torch.no_grad():
+            ben_out_w = benign_mean[idx_w_start:idx_w_end].view(num_classes, -1)
+            ben_out_b = benign_mean[idx_b_start:idx_b_end].view(num_classes, 1)
+            ben_out_params = torch.cat([ben_out_w, ben_out_b], dim=1)
+            ben_neuron_norms = torch.norm(ben_out_params, dim=1) # shape: (num_classes,)
+            
+        # 3. 核心避险逻辑：如果恶意神经元的幅度超过了良性均值，就产生 Loss
+        # 使用 ReLU 截断：只有 neuron_norms > ben_neuron_norms 时，才有值
+        excess_magnitude = torch.relu(neuron_norms - ben_neuron_norms.unsqueeze(0))
+        
+        # 把超出的部分转化为标量 Loss
+        l_output_magnitude = torch.norm(excess_magnitude, dim=1)
+        # =================================================================
+        
+        
+        
         # 堆叠 Loss (和原逻辑一致)
-        raw_losses = torch.stack([l_ce,l_cw, l_krum, l_group,l_box])
+        raw_losses = torch.stack([l_ce,l_cw, l_krum, l_lasa_norm ,l_sign,l_box,l_output_magnitude])
         # ===============================================
         
         # 执行你写好的平滑极值 MOS 优化
