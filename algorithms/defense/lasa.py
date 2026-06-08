@@ -137,11 +137,12 @@ def lasa(local_updates, global_model, args):
                 layer_sign[i] = np.abs((layer_sign[i] - median) / std)
             benign_idx2 = benign_idx2.intersection(set([int(i) for i in np.argwhere(torch.tensor(layer_sign).cpu().numpy() < args.lambda_s)]))
 
-
+        
         benign_idx = list(benign_idx2.intersection(benign_idx1))
+        
         if len(benign_idx) == 0:
             benign_idx = list(all_set)
-        
+        #print(f"DEBUG: 幸存的客户端索引: {benign_idx}")
         # Layer-wise adaptive aggregation
         key_mean_weight[key] = torch.mean(torch.stack([clipped_local_updates[i][key] for i in benign_idx], dim=0), dim=0)
 

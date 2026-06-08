@@ -24,6 +24,8 @@ from ..defense.lasa import lasa
 from ..defense.signguard import signguard
 from ..defense.dnc import dnc
 from ..defense.rlr import robust_aggregation
+from ..defense.lfd import lfd
+from ..defense.msguard import msguard
 
 import time
 
@@ -159,6 +161,11 @@ def fedavg_all(args):
     if args.attack != 'dynamic':
         attack_method = attack(args.attack)
 
+    prev_global_model = copy.deepcopy(global_model)
+    
+    
+    historical_pop = None
+    
     for t in range(args.round):
         if args.attack:
             gt_attack_cnt = 0
@@ -265,8 +272,17 @@ def fedavg_all(args):
                 # 提取语义破坏的指导梯度
                 g_ce, g_cw = compute_surrogate_guidance(net_glob, ldr_malicious, args.device, num_of_label)
                 
-                # 传给 MOS-Attack
-                local_updates = attack_method(local_updates, args, malicious_attackers_this_round, g_ce=g_ce, g_cw=g_cw)
+                # ================= 修改：传入并接收 historical_pop =================
+                # 把 historical_pop 传进去，并用它接收更新后的种群
+                local_updates, historical_pop = attack_method(
+                    local_updates, 
+                    args, 
+                    malicious_attackers_this_round, 
+                    g_ce=g_ce, 
+                    g_cw=g_cw, 
+                    historical_pop=historical_pop
+                )
+                # ===================================================================
             else:
                 local_updates = attack_method(local_updates, args, malicious_attackers_this_round)
         
@@ -313,9 +329,124 @@ def fedavg_all(args):
             
         elif args.defend == 'rlr':
             global_model = robust_aggregation(local_updates, global_model, args)
+            
+        elif args.defend == 'lfd':
+            global_model = lfd(local_updates, global_model, args)
+            
+        elif args.defend == 'msguard':
+            aggregate_update, trusted_clients = msguard(local_updates, args, malicious_attackers_this_round)
+            global_model = average(global_model, [aggregate_update])
+            
+        
 
         elif args.defend == 'fedavg':
             global_model = average(global_model, local_updates) # just fedavg
+            
+        has_nan = False
+        for k, v in global_model.items():
+            if torch.isnan(v).any() or torch.isinf(v).any():
+                has_nan = True
+                break
+        
+        # ----------------- 增加数值稳定性检查与稳健回退 -----------------
+        # 配置默认值（可通过 args 覆盖）
+        MAX_CLIENT_NORM = getattr(args, 'max_client_norm', 5.0)
+        CLIP_VALUE = getattr(args, 'clip_value', 1.0)
+        CONSECUTIVE_ROUNDS = getattr(args, 'consecutive_anomaly_rounds', 2)
+        MIN_FLAGGED_CLIENTS = getattr(args, 'min_flagged_clients', 3)
+
+        # 对所有本轮的客户端更新进行预处理：检查 NaN/Inf、计算范数、全局范数缩放与逐元素裁剪
+        client_norms = []
+        flagged_clients = []
+        cleaned_updates = []
+        for idx, upd in enumerate(local_updates):
+            bad = False
+            total_sq = 0.0
+            for k, v in upd.items():
+                if not isinstance(v, torch.Tensor):
+                    continue
+                if torch.isnan(v).any() or torch.isinf(v).any():
+                    bad = True
+                    break
+                total_sq += float((v.float() ** 2).sum().item())
+            if bad or math.isnan(total_sq) or math.isinf(total_sq):
+                flagged_clients.append(idx)
+                # replace with zeros to keep positions but avoid NaN propagation
+                zero_upd = {k: (torch.zeros_like(v) if isinstance(v, torch.Tensor) else v) for k, v in upd.items()}
+                cleaned_updates.append(zero_upd)
+                continue
+
+            total_norm = math.sqrt(total_sq)
+            client_norms.append(total_norm)
+
+            # 全局范数裁剪（scale down if too large）
+            if total_norm > MAX_CLIENT_NORM and total_norm > 0:
+                scale = MAX_CLIENT_NORM / (total_norm + 1e-12)
+                for k in upd:
+                    if isinstance(upd[k], torch.Tensor):
+                        upd[k] = upd[k] * scale
+
+            # per-parameter clamp and nan->num
+            for k in upd:
+                if isinstance(upd[k], torch.Tensor):
+                    upd[k].clamp_(-CLIP_VALUE, CLIP_VALUE)
+                    upd[k] = torch.nan_to_num(upd[k], nan=0.0, posinf=CLIP_VALUE, neginf=-CLIP_VALUE)
+
+            cleaned_updates.append(upd)
+
+
+        # 把清理后的更新写回，供后续防御器使用
+        local_updates = cleaned_updates
+
+        # 检查聚合后模型是否出现 NaN/Inf；如果出现，采取更稳健的回退策略
+        has_nan = False
+        for k, v in global_model.items():
+            if torch.isnan(v).any() or torch.isinf(v).any():
+                has_nan = True
+                break
+
+        # 将异常计数保存在 args 中以跨轮次追踪
+        if not hasattr(args, '_anomaly_counter'):
+            args._anomaly_counter = 0
+
+        def robust_median_aggregate(updates):
+            # updates: list of state_dict
+            agg = {}
+            if not updates:
+                return agg
+            keys = list(updates[0].keys())
+            for k in keys:
+                tensors = torch.stack([u[k] for u in updates], dim=0)
+                agg[k] = torch.median(tensors, dim=0).values
+            return agg
+
+        if has_nan:
+            print(f"\n[!] 警告：第 {t} 轮聚合后的全局模型出现 NaN/Inf。")
+            # 如果被标记的客户端数量达到阈值，则增加计数
+            if len(flagged_clients) >= MIN_FLAGGED_CLIENTS:
+                args._anomaly_counter += 1
+            else:
+                args._anomaly_counter = max(0, args._anomaly_counter - 1)
+
+            if args._anomaly_counter >= CONSECUTIVE_ROUNDS:
+                # 连续异常，回档到上一轮
+                print(f"第 {t} 轮：连续异常达到 {args._anomaly_counter} 轮，执行回档。")
+                global_model = copy.deepcopy(prev_global_model)
+                args.local_lr = args.local_lr * 0.5
+            else:
+                # 未达到回档阈值：使用鲁棒聚合（元素中位数）作为回退
+                print(f"第 {t} 轮：未达到回档阈值，使用中位数聚合作为回退（anomaly_counter={args._anomaly_counter}）。")
+                agg_update = robust_median_aggregate(local_updates)
+                if agg_update:
+                    global_model = average(global_model, [agg_update])
+                else:
+                    # 如果聚合失败，回档
+                    global_model = copy.deepcopy(prev_global_model)
+                    args.local_lr = args.local_lr * 0.5
+        else:
+            # 如果模型健康，更新备份并重置计数
+            prev_global_model = copy.deepcopy(global_model)
+            args._anomaly_counter = 0
 
         ## test global model on server side
         net_glob.load_state_dict(global_model)
@@ -355,7 +486,13 @@ def fedavg_all(args):
         if best_test_accuracy < test_acc:
             best_test_accuracy = test_acc
 
-        if math.isnan(train_loss) or train_loss > 1e8 or t == args.round - 1:
+        if math.isnan(train_loss) or train_loss > 1e8:
+            print(f"t {t:3d}: 本轮局部 train_loss 异常 ({train_loss})，已跳过损坏的更新。")
+
+        # 只有在达到最大轮次时才退出
+        if t == args.round - 1:
+            t2 = time.time()
+            hours, rem = divmod(t2-t1, 3600)
             t2 = time.time()
             hours, rem = divmod(t2-t1, 3600)
             minutes, seconds = divmod(rem, 60)

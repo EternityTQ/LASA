@@ -27,8 +27,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_attackers', type=int, default=20, help='Bayzatine attckers')
     parser.add_argument('--beta', type=float, default=0, help='ema')
     parser.add_argument('--attack', type=str, default='agrTailoredTrmean', help='attack method', choices=['agrTailoredTrmean', 'agrAgnosticMinMax', 'agrAgnosticMinSum', 'signflip_attack', 'noise_attack', \
-                'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack','mos_attack'])
-    parser.add_argument('--defend', type=str, default='lasa', help='defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr'])
+                'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack','mos_attack', 'skew_attack'])
+    parser.add_argument('--defend', type=str, default='lasa', help='defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
 
     parser.add_argument('--dataset', type=str, default='cifar', help='dataset')
     parser.add_argument('--lambda_n', type=float, default=1.0, help='reserver sparsity')

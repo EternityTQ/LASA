@@ -128,7 +128,7 @@ def dnc(local_updates, global_model, args):
     #     flat_param = flat_param / threshold
 
     # Add DP noise
-    if args.use_dp:
+    if getattr(args, 'use_dp', False): 
         delta_norm = torch.norm(flat_param)
         threshold = delta_norm / args.clip
         if threshold > 1.0:
@@ -148,7 +148,7 @@ def dnc(local_updates, global_model, args):
     flat_local_updates.append(temp_model)
 
 
-    print("sigma ", args.sigma)
+    print("sigma ", getattr(args, 'sigma', None))
     ###########################
     ########## global #########
     ###########################

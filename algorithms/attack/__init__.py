@@ -1,6 +1,9 @@
 from .agr import *
 from .lie import *
 from .naive import *
+from .mos import *
+from .skew import *
+from .scalesign import *
 
 def attack(attack):
 
@@ -15,6 +18,9 @@ def attack(attack):
                'agrTailoredKrumBulyan': agrTailoredKrumBulyan,
                'agrAgnosticMinSum': agrAgnosticMinSum,
                'non_attack': non_attack,
+               'mos_attack': mos_attack,
+               'skew_attack': skew_attack,
+               'scalesign': scalesign_attack,
     }
 
     return attacks[attack]

@@ -47,8 +47,9 @@ class LocalUpdate(object):
         net.train()
         for _ in range(self.args.tau):
             for _, (images, labels) in enumerate(ldr_train):
-                if attack_flag and attack_method =='label_flip':
-                    labels = num_of_label - labels
+                if attack_flag :
+                    if attack_method =='label_flip':
+                        labels = num_of_label - labels
                 images, labels = images.to(self.args.device), labels.to(self.args.device)
                 net.zero_grad()
                 log_probs = net(images)

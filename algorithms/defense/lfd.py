@@ -11,7 +11,6 @@ def clusters_dissimilarity(clusters):
     n1 = len(clusters[1])
     m = n0 + n1 
     
-    # 防止因某个簇为空而导致除零报错
     if n0 == 0: return 1.0, 0.0
     if n1 == 0: return 0.0, 1.0
 
@@ -27,14 +26,31 @@ def clusters_dissimilarity(clusters):
 
 def lfd(local_updates, global_model, args):
     """
-    LASA 框架兼容的 LFighter (LFD) 防御算法
+    LASA 框架兼容的 LFighter (LFD) 防御算法 (增加 NaN 过滤机制)
     """
-    m = len(local_updates)
-    if m == 0:
+    # ---------------------------------------------------------
+    # [新增防御机制] 数据清洗：过滤掉发生梯度爆炸 (NaN/Inf) 的异常更新
+    # ---------------------------------------------------------
+    valid_updates = []
+    for update in local_updates:
+        is_valid = True
+        for key in update.keys():
+            # 如果这层参数包含任何非数字或无穷大，直接判定为非法
+            if torch.isnan(update[key]).any() or torch.isinf(update[key]).any():
+                is_valid = False
+                break
+        if is_valid:
+            valid_updates.append(update)
+            
+    # 如果极度巧合，所有客户端发来的更新都炸了，那就放弃这轮聚合，维持原模型不变
+    if len(valid_updates) == 0:
+        print("[LFD Warning] 本轮所有客户端更新均包含 NaN/Inf，跳过聚合。")
         return global_model
-    
-    # 1. 自动定位最后的全连接层（分类器层）的 weight 和 bias
-    # 我们过滤掉 'num_batches_tracked' 等 BatchNorm 追踪参数，只看核心权重
+        
+    local_updates = valid_updates
+    m = len(local_updates)
+    # ---------------------------------------------------------
+
     valid_keys = [k for k in local_updates[0].keys() if 'num_batches_tracked' not in k and 'running' not in k]
     weight_key = valid_keys[-2]
     bias_key = valid_keys[-1]
@@ -42,26 +58,20 @@ def lfd(local_updates, global_model, args):
     dw = []
     db = []
     for i in range(m):
-        # 注意：LASA 框架传入的 local_updates 是“更新量 (delta)”
-        # LFighter 原始论文的 dw 是 w_old - w_new = -delta，这里我们取负以对齐原版逻辑
         dw.append(-local_updates[i][weight_key].cpu().numpy())
         db.append(-local_updates[i][bias_key].cpu().numpy())
         
     dw = np.asarray(dw)
     db = np.asarray(db)
 
-    # 2. 判断分类类别数量，分离特征
     if len(db[0]) <= 2:
-        # 二分类或单分类模型直接全部展平
         data = [dw[i].reshape(-1) for i in range(m)]
     else:
-        # 多分类模型：找出被更新影响最大的两个类（很可能是攻击者设定的源类和目标类）
         norms = np.linalg.norm(dw, axis=-1) 
         memory = np.sum(norms, axis=0) + np.sum(np.abs(db), axis=0)
         max_two_freq_classes = memory.argsort()[-2:]
         data = [dw[i][max_two_freq_classes].reshape(-1) for i in range(m)]
 
-    # 3. 使用 K-Means 将客户端强行分为两拨
     if m >= 2:
         kmeans = KMeans(n_clusters=2, random_state=0, n_init='auto').fit(data)
         labels = kmeans.labels_
@@ -72,13 +82,11 @@ def lfd(local_updates, global_model, args):
     for i, l in enumerate(labels):
         clusters[l].append(data[i])
 
-    # 4. 判断哪一拨是诚实节点
     good_cl = 0
     cs0, cs1 = clusters_dissimilarity(clusters)
-    if cs0 < cs1:  # 差异度小的（更抱团的）被认为是诚实节点
+    if cs0 < cs1:  
         good_cl = 1
 
-    # 5. 过滤掉被判定为恶意的客户端梯度
     scores = np.ones([m])
     for i, l in enumerate(labels):
         if l != good_cl:
@@ -86,11 +94,9 @@ def lfd(local_updates, global_model, args):
             
     good_indices = [i for i, s in enumerate(scores) if s == 1]
     
-    # 安全兜底：如果所有人都不幸被判定为一类或出错，退化为全部聚合（防止报错崩溃）
     if len(good_indices) == 0:
         good_indices = list(range(m))
 
-    # 6. 基于良性节点的索引，进行最终的均值聚合
     key_mean_weight = {}
     for key in local_updates[0].keys():
         if 'num_batches_tracked' in key:
@@ -98,7 +104,6 @@ def lfd(local_updates, global_model, args):
         stacked_updates = torch.stack([local_updates[i][key] for i in good_indices], dim=0)
         key_mean_weight[key] = torch.mean(stacked_updates, dim=0)
 
-    # 7. 将筛选后的干净更新安全合并回全局模型
     for key in key_mean_weight.keys():
         global_model[key].data += key_mean_weight[key].data
 
