@@ -28,17 +28,30 @@ if __name__ == '__main__':
     parser.add_argument('--beta', type=float, default=0, help='ema')
     parser.add_argument('--attack', type=str, default='agrTailoredTrmean', help='attack method', choices=['agrTailoredTrmean', 'agrAgnosticMinMax', 'agrAgnosticMinSum', 'signflip_attack', 'noise_attack', \
                 'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack','mos_attack', 'skew_attack'])
-    parser.add_argument('--defend', type=str, default='lasa', help='defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
-
+    parser.add_argument('--defend1', type=str, default='lasa', help='primary defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
+    parser.add_argument('--defend2', type=str, default=None, help='secondary defend method (optional)', choices=[None, 'fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
+    parser.add_argument('--defend3', type=str, default=None, help='tertiary defend method (optional)', choices=[None, 'fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
+    parser.add_argument('--loss_mask', type=str, default='1111111', help='Binary string to select active losses in mos_attack, e.g. 1000100')
     parser.add_argument('--dataset', type=str, default='cifar', help='dataset')
     parser.add_argument('--lambda_n', type=float, default=1.0, help='reserver sparsity')
     parser.add_argument('--lambda_s', type=float, default=1.0, help='reserver sparsity')
-
+    parser.add_argument('--alpha', type=float, default=0.5, help='Dirichlet distribution alpha for data heterogeneity (smaller = more non-IID)')
     meta_args = parser.parse_args()
+
+    # 收集所有防御方法
+    defend_methods = [meta_args.defend1]
+    if meta_args.defend2:
+        defend_methods.append(meta_args.defend2)
+    if meta_args.defend3:
+        defend_methods.append(meta_args.defend3)
+    meta_args.defend_methods = defend_methods
+
+    # 为了向后兼容，保留defend属性（使用第一个防御方法）
+    meta_args.defend = meta_args.defend1
 
     if meta_args.dataset == 'sha':
         meta_args.dataset = 'shakespeare'
-    
+
     if meta_args.dataset != 'noniidcifar' and meta_args.dataset != 'noniidcifar100':
         meta_args.alpha = -1
 
@@ -48,7 +61,9 @@ if __name__ == '__main__':
     config = Config.fromfile(config_path)
     meta_args = merge_config(config, meta_args)
 
-    meta_args.results_dir = './exp_results/%s/Attack_%s_Raito_%d/Defense_%s/' % (meta_args.dataset, str(meta_args.attack), meta_args.num_attackers, str(meta_args.defend))
+    # 使用所有防御方法来命名结果目录
+    defend_str = '_'.join(defend_methods)
+    meta_args.results_dir = './exp_results/%s/Attack_%s_Raito_%d/Defense_%s/' % (meta_args.dataset, str(meta_args.attack), meta_args.num_attackers, defend_str)
 
     meta_args.num_attackers = int(meta_args.num_attackers * meta_args.num_selected_users / 100)
 
@@ -96,7 +111,7 @@ if __name__ == '__main__':
     my_string = '---' * 10 + '\n' +\
                 'dataset is: ' + str(meta_args.dataset) + ', ' + '\n' +\
                 'attack is: ' + str(meta_args.attack) + ', ' + '\n' +\
-                'defend is: ' + str(meta_args.defend) + ', ' + '\n' +\
+                'defend methods: ' + str(meta_args.defend_methods) + ', ' + '\n' +\
                 'DP: ' + str(getattr(args, 'use_dp', False)) + ', ' + '\n' +\
                 'num_attackers is: ' + str(meta_args.num_attackers) + ', ' + '\n' +\
                 'sparsity is: ' + str(meta_args.sparsity) + ', ' + '\n' +\

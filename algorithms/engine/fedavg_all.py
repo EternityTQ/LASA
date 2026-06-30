@@ -178,14 +178,23 @@ def fedavg_all(args):
     else:
         args.attack = None
         args.num_attackers = 0
-    
-    if hasattr(args, 'defend'):
+
+    # 处理多个防御方法
+    defend_methods = []
+    if hasattr(args, 'defend_methods'):
+        defend_methods = [d for d in args.defend_methods if d and d != 'None']
+        defend_flag = len(defend_methods) > 0
+    elif hasattr(args, 'defend'):
         if args.defend != 'None':
             defend_flag = True
+            defend_methods = [args.defend]
         else:
             args.defend = None
     else:
         args.defend = None
+
+    if not defend_methods:
+        defend_methods = [None]
 
     # sampling attackers' id
     if args.attack:
@@ -321,62 +330,174 @@ def fedavg_all(args):
                 # ===================================================================
             else:
                 local_updates = attack_method(local_updates, args, malicious_attackers_this_round)
-        
+
         ## robust/non-robust global aggregation
         if args.attack:
             print('attack:' + args.attack)
         else:
             print('attack: None')
 
-        if args.defend:
-            print('defend:' + args.defend)
+        # 如果有多个防御方法，对每个防御方法生成一个候选模型
+        if len(defend_methods) > 1:
+            print(f'Testing {len(defend_methods)} defense methods: {defend_methods}')
+
+            candidate_models = []
+            candidate_accs = []
+
+            for defend_method in defend_methods:
+                print(f'\n=== Aggregating with defense: {defend_method} ===')
+                args.defend = defend_method
+
+                # 为每个防御方法创建独立的候选模型
+                candidate_model = copy.deepcopy(global_model)
+
+                # 执行对应的防御聚合
+                if defend_method == 'multi_krum':
+                    aggregate_model, _ = multi_krum(local_updates, multi_k=True)
+                    candidate_model = average(candidate_model, [aggregate_model])
+                elif defend_method == 'krum':
+                    aggregate_model, _ = multi_krum(local_updates, multi_k=False)
+                    candidate_model = average(candidate_model, [aggregate_model])
+                elif defend_method == 'bulyan':
+                    aggregate_model, _ = bulyan(local_updates)
+                    candidate_model = average(candidate_model, [aggregate_model])
+                elif defend_method == 'tr_mean':
+                    aggregate_model = tr_mean(local_updates)
+                    candidate_model = average(candidate_model, [aggregate_model])
+                elif defend_method == 'sparsefed':
+                    if t > 0:
+                        candidate_model, momentum, error = sparsefed(local_updates, candidate_model, args, momentum, error)
+                    else:
+                        candidate_model, momentum, error = sparsefed(local_updates, candidate_model, args)
+                elif defend_method == 'signguard':
+                    candidate_model = signguard(local_updates, candidate_model, args)
+                elif defend_method == 'dnc':
+                    candidate_model = dnc(local_updates, candidate_model, args)
+                elif defend_method == 'lasa':
+                    candidate_model = lasa(local_updates, candidate_model, args)
+                elif defend_method == 'geomed':
+                    candidate_model = geomed(local_updates, candidate_model, args)
+                elif defend_method == 'rlr':
+                    candidate_model = robust_aggregation(local_updates, candidate_model, args)
+                elif defend_method == 'lfd':
+                    candidate_model = lfd(local_updates, candidate_model, args)
+                elif defend_method == 'msguard':
+                    aggregate_update, trusted_clients = msguard(local_updates, args, malicious_attackers_this_round)
+                    candidate_model = average(candidate_model, [aggregate_update])
+                elif defend_method == 'fedavg' or defend_method is None:
+                    candidate_model = average(candidate_model, local_updates)
+
+                # 评测候选模型
+                net_glob.load_state_dict(candidate_model)
+                with torch.no_grad():
+                    acc, _ = test_img(net_glob, dataset_test, args)
+
+                candidate_models.append(candidate_model)
+                candidate_accs.append(acc)
+
+                print(f'Defense {defend_method}: Test Accuracy = {acc:.5f}')
+
+            # 选择准确率最高的模型
+            best_idx = np.argmax(candidate_accs)
+            best_defend = defend_methods[best_idx]
+            best_acc = candidate_accs[best_idx]
+            global_model = candidate_models[best_idx]
+
+            print(f'\n=== Selected Defense: {best_defend} with accuracy {best_acc:.5f} ===')
+            print(f'All defense accuracies: {dict(zip(defend_methods, candidate_accs))}')
+
+            # 记录到日志
+            with open(args.exp_record, 'a') as f:
+                f.write(f'Round {t}: Defense comparison:\n')
+                for i, defend_method in enumerate(defend_methods):
+                    f.write(f'  {defend_method}: {candidate_accs[i]:.5f}\n')
+                f.write(f'  Selected: {best_defend} with accuracy {best_acc:.5f}\n')
+
+            test_acc = best_acc
+
+            # 检查选中的模型是否包含NaN/Inf
+            has_nan = False
+            for k, v in global_model.items():
+                if torch.isnan(v).any() or torch.isinf(v).any():
+                    has_nan = True
+                    break
+
+            if has_nan:
+                print(f"\n[!] 警告：选中的模型 {best_defend} 包含 NaN/Inf，尝试选择备用模型")
+                # 尝试选择其他健康的模型
+                for idx in range(len(candidate_models)):
+                    if idx == best_idx:
+                        continue
+                    test_model = candidate_models[idx]
+                    is_healthy = True
+                    for k, v in test_model.items():
+                        if torch.isnan(v).any() or torch.isinf(v).any():
+                            is_healthy = False
+                            break
+                    if is_healthy:
+                        print(f"使用备用模型: {defend_methods[idx]} (准确率: {candidate_accs[idx]:.5f})")
+                        global_model = test_model
+                        test_acc = candidate_accs[idx]
+                        has_nan = False
+                        break
+
+                # 如果所有候选模型都有问题，回退到上一轮
+                if has_nan:
+                    print(f"所有候选模型都包含 NaN/Inf，回退到上一轮模型")
+                    global_model = copy.deepcopy(prev_global_model)
+                    args.local_lr = args.local_lr * 0.5
+
+            # 更新备份模型（如果选中的模型是健康的）
+            if not has_nan:
+                prev_global_model = copy.deepcopy(global_model)
+
         else:
-            print('defend: None')
+            # 单个防御方法，使用原有逻辑
+            defend_method = defend_methods[0]
+            print('defend:' + str(defend_method))
+            args.defend = defend_method
 
-        if args.defend == 'multi_krum':
-            aggregate_model, _ = multi_krum(local_updates, multi_k=True)
-            global_model = average(global_model, [aggregate_model])
-        elif args.defend == 'krum':
-            aggregate_model, _ = multi_krum(local_updates, multi_k=False)
-            global_model = average(global_model, [aggregate_model])
-        elif args.defend == 'bulyan':
-            aggregate_model, _ = bulyan(local_updates)
-            global_model = average(global_model, [aggregate_model])
-        elif args.defend == 'tr_mean':
-            aggregate_model = tr_mean(local_updates)
-            global_model = average(global_model, [aggregate_model])
-        elif args.defend == 'sparsefed':
-            if t > 0:
-                global_model, momentum, error = sparsefed(local_updates, global_model, args, momentum, error)
-            else:
-                global_model, momentum, error = sparsefed(local_updates, global_model, args)
+            if defend_method == 'multi_krum':
+                aggregate_model, _ = multi_krum(local_updates, multi_k=True)
+                global_model = average(global_model, [aggregate_model])
+            elif defend_method == 'krum':
+                aggregate_model, _ = multi_krum(local_updates, multi_k=False)
+                global_model = average(global_model, [aggregate_model])
+            elif defend_method == 'bulyan':
+                aggregate_model, _ = bulyan(local_updates)
+                global_model = average(global_model, [aggregate_model])
+            elif defend_method == 'tr_mean':
+                aggregate_model = tr_mean(local_updates)
+                global_model = average(global_model, [aggregate_model])
+            elif defend_method == 'sparsefed':
+                if t > 0:
+                    global_model, momentum, error = sparsefed(local_updates, global_model, args, momentum, error)
+                else:
+                    global_model, momentum, error = sparsefed(local_updates, global_model, args)
+            elif defend_method == 'signguard':
+                global_model = signguard(local_updates, global_model, args)
+            elif defend_method == 'dnc':
+                global_model = dnc(local_updates, global_model, args)
+            elif defend_method == 'lasa':
+                global_model = lasa(local_updates, global_model, args)
+            elif defend_method == 'geomed':
+                global_model = geomed(local_updates, global_model, args)
+            elif defend_method == 'rlr':
+                global_model = robust_aggregation(local_updates, global_model, args)
+            elif defend_method == 'lfd':
+                global_model = lfd(local_updates, global_model, args)
+            elif defend_method == 'msguard':
+                aggregate_update, trusted_clients = msguard(local_updates, args, malicious_attackers_this_round)
+                global_model = average(global_model, [aggregate_update])
+            elif defend_method == 'fedavg' or defend_method is None:
+                global_model = average(global_model, local_updates)
 
-        elif args.defend == 'signguard':
-            global_model = signguard(local_updates, global_model, args)
-        
-        elif args.defend == 'dnc':
-            global_model = dnc(local_updates, global_model, args)
+            ## test global model on server side
+            net_glob.load_state_dict(global_model)
 
-        elif args.defend == 'lasa':
-            global_model = lasa(local_updates, global_model, args)
-
-        elif args.defend == 'geomed':
-            global_model = geomed(local_updates, global_model, args)
-            
-        elif args.defend == 'rlr':
-            global_model = robust_aggregation(local_updates, global_model, args)
-            
-        elif args.defend == 'lfd':
-            global_model = lfd(local_updates, global_model, args)
-            
-        elif args.defend == 'msguard':
-            aggregate_update, trusted_clients = msguard(local_updates, args, malicious_attackers_this_round)
-            global_model = average(global_model, [aggregate_update])
-            
-        
-
-        elif args.defend == 'fedavg':
-            global_model = average(global_model, local_updates) # just fedavg
+            # Clean accuracy (no gradients needed)
+            with torch.no_grad():
+                test_acc, _ = test_img(net_glob, dataset_test, args)
             
         has_nan = False
         for k, v in global_model.items():
@@ -504,14 +625,17 @@ def fedavg_all(args):
                 n_restarts=getattr(args, 'setapgd_restarts', 1),
             )
 
-        with open(args.exp_record, 'a') as f:
-            msg = 'At round %d: the global model accuracy is %.5f' % (t, test_acc)
-            if robust_acc is not None:
-                msg += ' | SetAPGD robust acc: %.5f' % (robust_acc)
-            f.write(msg + '\n')
+        # 记录准确率（如果是单防御方法或者已经在多防御方法中记录过）
+        if len(defend_methods) == 1:
+            with open(args.exp_record, 'a') as f:
+                msg = 'At round %d: the global model accuracy is %.5f' % (t, test_acc)
+                if robust_acc is not None:
+                    msg += ' | SetAPGD robust acc: %.5f' % (robust_acc)
+                f.write(msg + '\n')
 
-            if t == args.round - 1:
-                f.write('-----' + '\n')
+                if t == args.round - 1:
+                    f.write('-----' + '\n')
+
         if robust_acc is None:
             print('t {:3d}: train_loss = {:.3f}, test_acc = {:.3f}'.
                   format(t, train_loss, test_acc))
