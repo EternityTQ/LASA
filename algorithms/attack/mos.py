@@ -223,10 +223,13 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         b_norm = torch.norm(benign_mean)
         #scale_factor = min(float(b_norm * 1), 5000.0) 
         # 将原本可能的 5000.0 限制死
-        scale_factor = min(float(b_norm * 1.0), float(b_norm * 2.0))
+        #scale_factor = min(float(b_norm * 1.0), float(b_norm * 2.0))
+        min_attack_scale = 1.0  # 可以根据实际情况微调
+        scale_factor = max(float(krum_radius * 0.3), min_attack_scale)
         
         g_ce_unit = g_ce.to(device) / (torch.norm(g_ce.to(device)) + 1e-9)
         g_cw_unit = g_cw.to(device) / (torch.norm(g_cw.to(device)) + 1e-9)
+        
         
         # 合并目标向量（由参数 lam 控制 CE 与 CW 的配比），并归一化为 unit 向量
         lam = float(lam)
@@ -237,15 +240,29 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         target_cw = benign_mean + scale_factor * g_cw_unit
     else:
         print("[MOS WARNING] ⚠️ 检测到代理梯度异常 (NaN/Inf)，启动安全回退策略！")
+        if g_ce is None:
+            print("[MOS WARNING] g_ce为空！")
+        if g_cw is None:
+            print("[MOS WARNING] g_cw为空！")
+        if torch.isnan(g_ce).any():
+            print("[MOS WARNING] g_ce为nan！")
+        if torch.isnan(g_cw).any():
+            print("[MOS WARNING] g_cw为nan！")
+        if torch.isinf(g_ce).any():
+            print("[MOS WARNING] g_ce为inf！")
+        if torch.isinf(g_cw).any():
+            print("[MOS WARNING] g_cw为inf！")
         target_ce = benign_mean
         target_cw = benign_mean
         
-        # ===== 新增修复：兜底时，给单位向量赋零向量 =====
-        # 这样当梯度异常时，算法本轮不会进行有方向的破坏（Loss计算为0），
-        # 而是完全靠随机变异和历史记忆维持阵型，完美度过危机！
-        g_ce_unit = torch.zeros_like(benign_mean).to(device)
-        g_cw_unit = torch.zeros_like(benign_mean).to(device)
-        g_combined_unit = torch.zeros_like(benign_mean).to(device)
+        # 【填补黑洞】：绝不能给 0 向量！给一个长度为安全半径 10%、方向与良性均值相同的推力
+        # 保证 Perturbation Norm 必定 > 0，让下一轮的 historical_pop 拥有活下去的遗传火种
+        safe_spark = krum_radius * 0.1
+        benign_dir = benign_mean / (torch.norm(benign_mean) + 1e-9)
+        
+        g_ce_unit = benign_dir * safe_spark
+        g_cw_unit = benign_dir * safe_spark
+        g_combined_unit = benign_dir * safe_spark
         # ============================================================
         
     target_ce = target_ce.detach()
@@ -269,31 +286,44 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         # 紧箍咒：计算出历史记忆当前的长度
         hist_norms = torch.norm(base_perturbation, dim=1, keepdim=True)
         # 允许历史记忆存在的最大长度（例如：当前轮次 krum_radius 的 1.5 倍）
-        max_allowed_hist = krum_radius * 1.5 
+        max_allowed_hist = krum_radius * 3 
         # 如果超标了，就等比例压缩它；如果没超标，保持原样
         shrink_factor = torch.clamp(max_allowed_hist / (hist_norms + 1e-9), max=1.0)
         base_perturbation = base_perturbation * shrink_factor
 
         # 衰减系数依然保留，进一步维稳
-        decay_factor = 0.6 
+        decay_factor = 0.95 
         malicious_set = benign_mean + (base_perturbation * decay_factor) + \
                         torch.randn(K, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
     else:
         # 第一轮攻击时，没有历史经验，从头开始探索
+        # 先生成纯随机的基底
         malicious_set = benign_mean.clone().detach().repeat(K, 1) + \
-                        torch.randn(K, benign_mean.shape[0]).to(device) * (0.1 * benign_std)
+                        torch.randn(K, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
+        
+        # 【关键修改】：将前几个恶意个体直接替换为沿着指导方向走到极致的“精英种子”
+        # 确保 target_ce 和 target_cw 的距离在 Krum 允许的范围内 (前面建议修改的 krum_radius * 0.8)
+    if g_ce is not None and g_cw is not None:
+        if K >= 1:
+            malicious_set[0] = target_ce  # 极致的 CE 破坏者
+        if K >= 2:
+            malicious_set[1] = target_cw  # 极致的 CW 破坏者
+        if K >= 3:
+                # 沿着混合方向的破坏者
+            scale_factor = krum_radius * 0.95
+            malicious_set[2] = benign_mean + scale_factor * g_combined_unit
     # =========================================================================
 
     # 1. 解析传入的 loss_mask 参数 (默认全开，即4位掩码 '1111')
     # 支持传入短于4位的字符串（右侧补'0'），或长于4位的字符串（截取前4位）
-    loss_mask = getattr(args, 'loss_mask', '1111')
-    loss_mask = loss_mask.ljust(4, '0')[:4]
+    loss_mask = getattr(args, 'loss_mask', '11111')
+    loss_mask = loss_mask.ljust(4, '0')[:5]
 
     # 2. 统计开启的 loss 数量，作为 num_objectives 传给 normalizer
     num_active_losses = loss_mask.count('1')
     if num_active_losses == 0:  # 兜底，至少保留第一个目标
-        loss_mask = '1000'
-        num_active_losses = 1
+        loss_mask = '11000'
+        num_active_losses = 2
         
     normalizer = LossNormalizer(num_objectives=num_active_losses, momentum=0.8)
 
@@ -428,6 +458,12 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         masked_deviation = current_deviation * survival_mask.unsqueeze(0)
         # 使用合并后的单一 guidance loss（由 lam 控制 CE/CW 比例）
         l_combined_p = -torch.sum(masked_deviation * g_combined_unit.unsqueeze(0), dim=1)
+        target_ce = benign_mean + g_ce_unit
+        
+        target_cw = benign_mean + g_cw_unit
+        
+        l_ce = torch.norm(pop - target_ce.unsqueeze(0), dim=1)
+        l_cw = torch.norm(pop - target_cw.unsqueeze(0), dim=1)
 
         current_dist_p = torch.norm(pop - benign_mean, dim=1)
         excess_dist = torch.relu(current_dist_p - krum_radius)
@@ -441,8 +477,13 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         malicious_mean_p = torch.mean(pop, dim=0)
         l_group_p = torch.norm(pop - malicious_mean_p, dim=1)
 
+            # 符号损失
+# 定义温度系数 k (可以作为一个超参数调优，先从 10.0 开始)
+        temperature_k = 10.0 
+
         l_sign_layer_max_p = torch.zeros(P, device=device)
         l_norm_layer_max_p = torch.zeros(P, device=device)
+        
         for name, start_idx, end_idx in layer_dims:
             mal_layer = pop[:, start_idx:end_idx]
             ben_layer_all = benign_grads[:, start_idx:end_idx]
@@ -486,7 +527,9 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
 
         # 精简后的目标列表：4 个核心冲突目标
         all_possible_losses_p = [
-            l_combined_p,   # Index 0: 攻击破坏性
+            #l_combined_p,   # Index 0: 攻击破坏性
+            l_ce,
+            l_cw,
             l_magnitude_p,  # Index 1: 合并后的幅度约束
             l_group_p,      # Index 2: 拓扑/群体约束
             l_sign_layer_max_p  # Index 3: 符号一致性约束
@@ -553,6 +596,17 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
             # 只在 survival_mask 指示的位置上加入小幅高斯突变
             noise1 = torch.randn_like(child1) * mutation_sigma
             noise2 = torch.randn_like(child2) * mutation_sigma
+            dir_step = 0.05 * krum_radius 
+            
+            # 让子代不仅有随机突变，还顺着指导梯度往前走一步
+            if g_combined_unit is not None:
+                directional_push = dir_step * g_combined_unit
+                # 为了维持多样性，可以对推力也加一点随机性（例如 0.5 到 1.5 倍的力度）
+                push_scale1 = torch.empty(1).uniform_(0.5, 1.5).item()
+                push_scale2 = torch.empty(1).uniform_(0.5, 1.5).item()
+                
+                noise1 = noise1 + directional_push * push_scale1
+                noise2 = noise2 + directional_push * push_scale2
             noise1 = noise1 * survival_mask
             noise2 = noise2 * survival_mask
             child1 = child1 + noise1
