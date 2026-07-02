@@ -31,11 +31,17 @@ if __name__ == '__main__':
     parser.add_argument('--defend1', type=str, default='lasa', help='primary defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
     parser.add_argument('--defend2', type=str, default=None, help='secondary defend method (optional)', choices=[None, 'fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
     parser.add_argument('--defend3', type=str, default=None, help='tertiary defend method (optional)', choices=[None, 'fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
-    parser.add_argument('--loss_mask', type=str, default='1111111', help='Binary string to select active losses in mos_attack, e.g. 1000100')
+    parser.add_argument('--loss_mask', type=str, default='1111111', help='Binary string to select active losses in mos_attack, 7 bits: [l_ce, l_cw, l_magnitude, l_group, l_sign, l_pca, l_subspace]')
     parser.add_argument('--dataset', type=str, default='cifar', help='dataset')
     parser.add_argument('--lambda_n', type=float, default=1.0, help='reserver sparsity')
     parser.add_argument('--lambda_s', type=float, default=1.0, help='reserver sparsity')
     parser.add_argument('--alpha', type=float, default=0.5, help='Dirichlet distribution alpha for data heterogeneity (smaller = more non-IID)')
+
+    # MOS attack specific parameters
+    parser.add_argument('--mos_conv_sparsity', type=float, default=0.3, help='Sparsity ratio for conv layers in MOS attack guidance gradient (0.0-1.0)')
+    parser.add_argument('--mos_classifier_sparsity', type=float, default=1.0, help='Sparsity ratio for classifier layers in MOS attack guidance gradient (0.0-1.0)')
+    parser.add_argument('--use_dnc_aware_mask', type=int, default=1, help='Enable DNC-aware mask when DNC defense is active (0: disabled, 1: enabled)')
+    parser.add_argument('--enable_subspace_constraint', type=int, default=1, help='Enable subspace robustness constraint in MOS attack (0: disabled, 1: enabled)')
     meta_args = parser.parse_args()
 
     # 收集所有防御方法
@@ -65,7 +71,8 @@ if __name__ == '__main__':
     defend_str = '_'.join(defend_methods)
     meta_args.results_dir = './exp_results/%s/Attack_%s_Raito_%d/Defense_%s/' % (meta_args.dataset, str(meta_args.attack), meta_args.num_attackers, defend_str)
 
-    meta_args.num_attackers = int(meta_args.num_attackers * meta_args.num_selected_users / 100)
+    # num_attackers 是百分比，转换为基于总用户数的实际数量
+    meta_args.num_attackers = int(meta_args.num_attackers * meta_args.num_users / 100)
 
     if meta_args.defend == 'sparsefed':
         meta_args.com_p = 1 - meta_args.sparsity

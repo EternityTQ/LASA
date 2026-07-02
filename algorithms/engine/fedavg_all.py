@@ -30,22 +30,19 @@ from ..defense.msguard import msguard
 import time
 
 from ..attack import attack
+from ..attack.mos import compute_surrogate_guidance as compute_surrogate_guidance_mos
 
 # [新增辅助函数] 计算针对翻转标签的代理损失指导梯度
 import copy
 import torch
 
-def compute_surrogate_guidance(net_glob, dataloader, device, num_of_label):
-    #print("\n" + "="*60)
-    #print("[MOS DEBUG] 🕵️‍♂️ 开始提取代理梯度，进入侦探模式...")
+def compute_surrogate_guidance(net_glob, dataloader, device, num_of_label, args=None):
+    """
+    包装函数：调用 mos.py 中的改进版 compute_surrogate_guidance
+    """
     safe_net = copy.deepcopy(net_glob).to(device)
-    
-    # ================= 探针 1：检查传入模型的初始健康度 =================
-    has_nan_weight = any(torch.isnan(p).any().item() for p in safe_net.parameters())
-    #print(f"[MOS DEBUG] 1. 刚拷贝来的模型权重是否已包含 NaN/Inf? : {has_nan_weight}")
 
     # 强行清洗权重
-# ================= 终极沙箱清洗：包含 Weights 和 Buffers =================
     with torch.no_grad():
         for name, tensor in safe_net.state_dict().items():
             # 只处理浮点型张量（忽略如 num_batches_tracked 这样的整型张量）
@@ -54,76 +51,22 @@ def compute_surrogate_guidance(net_glob, dataloader, device, num_of_label):
                 tensor.nan_to_num_(nan=0.0, posinf=10.0, neginf=-10.0)
                 # 2. 截断异常大的数值
                 tensor.clamp_(-20.0, 20.0)
-                
+
                 # 3. 🛡️ 【最关键的一步】：保护方差，防止除零错误！
                 # 只要名字里带 'var'，它必定是方差，强制拉升到正数安全线以上
                 if 'var' in name or 'variance' in name:
                     tensor.clamp_(min=1e-4)
-    # =====================================================================
 
     safe_net.eval()
-    safe_net.zero_grad()
     criterion_ce = torch.nn.CrossEntropyLoss().to(device)
-    
+
     images, labels = next(iter(dataloader))
     images = images.to(device)
-    
-    # ================= 探针 2：检查输入数据 (很多人会忽略这里) =================
+    target_labels = (num_of_label - labels).to(device)
 
-    target_labels = (num_of_label - labels).to(device) 
-    
-    # 1. 前向传播
-    outputs = safe_net(images)
-    
-    # ================= 探针 3：检查前向传播结果 =================
-    has_nan_out = torch.isnan(outputs).any().item()
+    # 调用 mos.py 中的改进版函数
+    g_ce, g_cw = compute_surrogate_guidance_mos(safe_net, images, target_labels, criterion_ce, args)
 
-    
-    # 软截断保底
-    outputs = torch.nan_to_num(outputs, nan=0.0, posinf=20.0, neginf=-20.0)
-    
-    # -----------------------------------------
-    # 代理目标 1：Cross Entropy (CE) 梯度
-    # -----------------------------------------
-    loss_ce = criterion_ce(outputs, target_labels)
-    
-    # ================= 探针 4：检查 CE Loss =================
-    #print(f"[MOS DEBUG] 4. 计算得出的 loss_ce 数值: {loss_ce.item()}")
-    
-    loss_ce.backward(retain_graph=True)
-    
-    param_grads_ce = {name: param.grad.clone() for name, param in safe_net.named_parameters() if param.grad is not None}
-    
-    # ================= 探针 5：检查反向传播后的原始梯度 =================
-    has_nan_gce_raw = any(torch.isnan(g).any().item() for g in param_grads_ce.values())
-    #print(f"[MOS DEBUG] 5. backward() 之后，参数字典中的原生梯度是否含 NaN? : {has_nan_gce_raw}")
-    
-    g_ce_list = [param_grads_ce[k].flatten() if k in param_grads_ce else torch.zeros_like(safe_net.state_dict()[k]).flatten() for k in safe_net.state_dict().keys()]
-    g_ce = -torch.cat(g_ce_list) 
-    #print(f"[MOS DEBUG] 6. 最终拼接好的 g_ce 向量是否含 NaN? : {torch.isnan(g_ce).any().item()}")
-    
-    safe_net.zero_grad()
-    
-    # -----------------------------------------
-    # 代理目标 2：Margin Loss (CW) 梯度
-    # -----------------------------------------
-    correct_logits = torch.gather(outputs, 1, target_labels.unsqueeze(1)).squeeze(1)
-    outputs_clone = outputs.clone()
-    outputs_clone.scatter_(1, target_labels.unsqueeze(1), -1e4)
-    max_other_logits, _ = torch.max(outputs_clone, dim=1)
-    
-    loss_cw = torch.mean(torch.relu(max_other_logits - correct_logits + 10.0))
-    #print(f"[MOS DEBUG] 7. 计算得出的 loss_cw 数值: {loss_cw.item()}")
-    
-    loss_cw.backward()
-    
-    param_grads_cw = {name: param.grad.clone() for name, param in safe_net.named_parameters() if param.grad is not None}
-    g_cw_list = [param_grads_cw[k].flatten() if k in param_grads_cw else torch.zeros_like(safe_net.state_dict()[k]).flatten() for k in safe_net.state_dict().keys()]
-    g_cw = -torch.cat(g_cw_list) 
-    
-    #print(f"[MOS DEBUG] 8. 最终拼接好的 g_cw 向量是否含 NaN? : {torch.isnan(g_cw).any().item()}")
-    #print("="*60 + "\n")
-    
     return g_ce, g_cw
 
 def fedavg_all(args):
@@ -196,9 +139,10 @@ def fedavg_all(args):
     if not defend_methods:
         defend_methods = [None]
 
-    # sampling attackers' id
+    # sampling attackers' id - 固定选择恶意客户端（基于总用户数的百分比）
     if args.attack:
-        attacked_idxs = list(np.random.choice(range(args.num_users), int(args.num_attackers/args.num_selected_users*args.num_users), replace=False))
+        attacked_idxs = list(np.random.choice(range(args.num_users), args.num_attackers, replace=False))
+        print(f'Fixed malicious clients: {len(attacked_idxs)} out of {args.num_users} total users ({100*len(attacked_idxs)/args.num_users:.1f}%)')
     overall_attack_ratio = []
 
     if args.attack != 'dynamic':
@@ -221,11 +165,13 @@ def fedavg_all(args):
             args.local_lr = args.local_lr * args.decay_weight
 
         if args.num_attackers == 99:
-            upper = int(25 * args.num_selected_users / 100)
-            args.num_attackers = np.random.randint(10, upper+1)
-            attacked_idxs = list(np.random.choice(range(args.num_users), int(args.num_attackers/args.num_selected_users*args.num_users), replace=False))
+            # 特殊模式：每轮随机选择10-25%的恶意客户端
+            upper = int(25 * args.num_users / 100)
+            lower = int(10 * args.num_users / 100)
+            num_attackers_this_round = np.random.randint(lower, upper+1)
+            attacked_idxs = list(np.random.choice(range(args.num_users), num_attackers_this_round, replace=False))
 
-            print('At this round, attack ratio is %s' % args.num_attackers)
+            print(f'At this round, attack ratio is {100*num_attackers_this_round/args.num_users:.1f}% ({num_attackers_this_round} clients)')
 
         ############################################################# FedAvg ##########################################
         ## user selection
@@ -313,7 +259,7 @@ def fedavg_all(args):
                 ldr_malicious = data_loader_list[malicious_client_idx]
                 
                 # 提取语义破坏的指导梯度
-                g_ce, g_cw = compute_surrogate_guidance(net_glob, ldr_malicious, args.device, num_of_label)
+                g_ce, g_cw = compute_surrogate_guidance(net_glob, ldr_malicious, args.device, num_of_label, args)
                 if torch.isnan(g_ce).any() or torch.isnan(g_cw).any():
                     print("上游发现g_ce和g_cw为空！")
                 
