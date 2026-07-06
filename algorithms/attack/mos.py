@@ -77,11 +77,23 @@ def compute_surrogate_guidance(global_model, poison_images, target_labels, crite
             # 应用掩码（关键：保留原始梯度的幅度信息）
             p.grad.data = (grad_flat * mask).view_as(p.grad)
 
-    # 提取稀疏化后的 g_ce
-    g_ce_list = [p.grad.clone().flatten() for n, p in named if p.grad is not None]
-    g_ce = torch.cat(g_ce_list) if g_ce_list else torch.zeros(0, device=poison_images.device)
+    # 提取稀疏化后的 g_ce（关键：必须与 all_updates 的 flatten 方式一致）
+    def extract_gradient_vector(model, named_dict, device):
+        """从模型中提取梯度向量，包含 parameters 和 buffers"""
+        g_list = []
+        for name, tensor in model.state_dict().items():
+            if name in named_dict:
+                param = named_dict[name]
+                if param.grad is not None:
+                    g_list.append(param.grad.clone().flatten())
+                else:
+                    g_list.append(torch.zeros(tensor.numel(), device=device))
+            else:
+                g_list.append(torch.zeros(tensor.numel(), device=device))
+        return torch.cat(g_list) if g_list else torch.zeros(0, device=device)
 
-    # 清空梯度，准备算下一个
+    named_dict = dict(named)
+    g_ce = extract_gradient_vector(global_model, named_dict, poison_images.device)
     global_model.zero_grad()
     
     # -----------------------------------------
@@ -100,13 +112,11 @@ def compute_surrogate_guidance(global_model, poison_images, target_labels, crite
     loss_cw = torch.mean(torch.relu(max_other_logits - correct_logits + 20.0)) # 50.0 是 margin 余量
     
     loss_cw.backward()
-    
+
     # 提取并展平 CW 梯度
-    g_cw_list = [param.grad.clone().flatten() for param in global_model.parameters() if param.grad is not None]
-    g_cw = torch.cat(g_cw_list)
-    
+    g_cw = extract_gradient_vector(global_model, named_dict, poison_images.device)
     global_model.zero_grad()
-    
+
     return g_ce, g_cw
 
 class LossNormalizer:
@@ -127,11 +137,8 @@ class LossNormalizer:
         输出: normalized_losses (0~1之间)
         """
         # 如果输入包含多个攻击者，先取平均或最值代表当前水平
-        if losses.dim() > 1:
-            current_vals = torch.mean(losses, dim=1) # (num_obj,)
-        else:
-            current_vals = losses
-            
+        current_vals = torch.mean(losses, dim=1) if losses.dim() > 1 else losses
+
         if self.min_vals is None:
             self.min_vals = current_vals.clone().detach()
             self.max_vals = current_vals.clone().detach()
@@ -139,14 +146,14 @@ class LossNormalizer:
             # 使用动量更新历史极值，避免震荡
             self.min_vals = self.momentum * self.min_vals + (1 - self.momentum) * torch.min(self.min_vals, current_vals.detach())
             self.max_vals = self.momentum * self.max_vals + (1 - self.momentum) * torch.max(self.max_vals, current_vals.detach())
-            
+
         # 防止除以 0
-        range_vals = self.max_vals - self.min_vals
-        range_vals[range_vals < 1e-6] = 1.0
-        
+        range_vals = torch.clamp(self.max_vals - self.min_vals, min=1e-6)
+
         # 归一化到 [0, 1]
-        # 注意：这里需要 detach 极值，不让梯度传给 normalizer
-        normalized = (losses - self.min_vals.unsqueeze(-1) if losses.dim() > 1 else self.min_vals) / (range_vals.unsqueeze(-1) if losses.dim() > 1 else range_vals)
+        mins = self.min_vals.unsqueeze(-1) if losses.dim() > 1 else self.min_vals
+        ranges = range_vals.unsqueeze(-1) if losses.dim() > 1 else range_vals
+        normalized = (losses - mins) / ranges
         return normalized
 
 # 1. 签名里增加默认的 kwargs：g_ce 和 g_cw
@@ -155,46 +162,35 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
 
     device = args.device if hasattr(args, 'device') else 'cpu'
     K = malicious_attackers_this_round
-    
-    # --- 1. 数据准备 ---
+
+    # --- 1. 数据准备与层维度记录 ---
     all_updates_flatten = []
-    
-    # ================= 新增 1：追踪输出层参数在 Flatten 向量中的位置 =================
+    layer_dims = []  # 记录每一层在 flatten 向量中的位置
     idx_current = 0
     idx_w_start, idx_w_end = 0, 0
     idx_b_start, idx_b_end = 0, 0
     num_classes = 0
-    
-    # 获取字典里的 key 列表，通常 PyTorch 字典最后两个就是输出层的 weight 和 bias
+
+    # 获取输出层的 key
     keys = list(all_updates[0].keys())
-    out_weight_key = keys[-2]  # 例如 'fc.weight' 或 'classifier.weight'
-    out_bias_key = keys[-1]    # 例如 'fc.bias' 或 'classifier.bias'
-    
+    out_weight_key = keys[-2]
+    out_bias_key = keys[-1]
+
     for k, v in all_updates[0].items():
         num_params = v.numel()
+        layer_dims.append((k, idx_current, idx_current + num_params))
+
+        # 记录输出层位置
         if k == out_weight_key:
             idx_w_start = idx_current
             idx_w_end = idx_current + num_params
-            num_classes = v.shape[0]  # 输出层的类别数（比如 CIFAR10 就是 10）
+            num_classes = v.shape[0]
         elif k == out_bias_key:
             idx_b_start = idx_current
             idx_b_end = idx_current + num_params
+
         idx_current += num_params
-    # ==========================================================================
-    
-    
-    # --- 1. 数据准备 (修改部分) ---
-    all_updates_flatten = []
-    layer_dims = [] # 新增：用来记录每一层在 flatten 向量中的位置
-    idx_current = 0
-    
-    for k, v in all_updates[0].items():
-        if 'num_batches_tracked' in k: 
-            continue # 忽略 BN 层的统计量
-        num_params = v.numel()
-        layer_dims.append((k, idx_current, idx_current + num_params))
-        idx_current += num_params
-    
+
     for update in all_updates:
         vec = torch.cat([torch.flatten(update[k]) for k in update.keys()])
         all_updates_flatten.append(vec)
@@ -231,41 +227,26 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     
     # ================= 修改 2：DNC-aware 掩码（仅在 DNC 开启时使用）=================
     def compute_dnc_sensitive_mask(benign_grads, benign_mean, device, num_samples=5):
-        """
-        计算 DNC 敏感的维度掩码
-
-        原理：DNC 通过随机采样 + SVD 检测异常。我们模拟这个过程，
-        找出在多次随机采样中都被第一主成分覆盖的维度，这些维度最敏感。
-        """
+        """计算 DNC 敏感的维度掩码，找出在多次随机采样中都被第一主成分覆盖的维度"""
         num_params = benign_mean.numel()
         sensitivity_scores = torch.zeros(num_params, device=device)
 
-        # 模拟 DNC 的多次随机采样
         for _ in range(num_samples):
-            # 随机采样 1000 维（和 DNC 一致）
             sampled_indices = torch.randperm(num_params, device=device)[:1000]
-
-            # 在采样子空间上做 SVD
             benign_sub = benign_grads[:, sampled_indices]
             benign_sub_centered = benign_sub - benign_sub.mean(dim=0)
 
             try:
                 U, S, V = torch.linalg.svd(benign_sub_centered, full_matrices=False)
-                principal_component = V[0, :]  # 第一主成分
-
-                # 计算每个维度在主成分上的权重（绝对值）
+                principal_component = V[0, :]
                 weights = principal_component.abs()
-
-                # 累加到全局敏感度分数
                 sensitivity_scores[sampled_indices] += weights
             except:
                 continue
 
-        # 归一化敏感度分数
         sensitivity_scores = sensitivity_scores / (num_samples + 1e-9)
 
-        # 创建掩码：在 DNC 不敏感的维度上攻击（反向思维）
-        # 保留敏感度最低的 50% 维度
+        # 创建掩码：保留敏感度最低的 50% 维度
         k_dim = int(0.5 * num_params)
         _, low_sensitivity_indices = torch.topk(sensitivity_scores, k_dim, largest=False)
 
@@ -292,11 +273,12 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     # ============================================================================
     
     # ================= 关键新增区：处理传进来的指导梯度 =================
-    # 增加严格的检查：确保 g_ce 和 g_cw 里面没有任何 nan 或 inf
-# ================= 修复 1：拦截 NaN 梯度，并限制最大推力 =================
-    if (g_ce is not None and g_cw is not None and 
-        not torch.isnan(g_ce).any() and not torch.isnan(g_cw).any() and
-        not torch.isinf(g_ce).any() and not torch.isinf(g_cw).any()):
+    # 拦截 NaN 梯度，并限制最大推力
+    has_valid_guidance = (g_ce is not None and g_cw is not None and
+                          not torch.isnan(g_ce).any() and not torch.isinf(g_ce).any() and
+                          not torch.isnan(g_cw).any() and not torch.isinf(g_cw).any())
+
+    if has_valid_guidance:
         
         b_norm = torch.norm(benign_mean)
         #scale_factor = min(float(b_norm * 1), 5000.0) 
@@ -317,37 +299,32 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         target_ce = benign_mean + scale_factor * g_ce_unit
         target_cw = benign_mean + scale_factor * g_cw_unit
     else:
-        print("[MOS WARNING] ⚠️ 检测到代理梯度异常 (NaN/Inf)，启动安全回退策略！")
-        if g_ce is None:
-            print("[MOS WARNING] g_ce为空！")
-        if g_cw is None:
-            print("[MOS WARNING] g_cw为空！")
-        if torch.isnan(g_ce).any():
-            print("[MOS WARNING] g_ce为nan！")
-        if torch.isnan(g_cw).any():
-            print("[MOS WARNING] g_cw为nan！")
-        if torch.isinf(g_ce).any():
-            print("[MOS WARNING] g_ce为inf！")
-        if torch.isinf(g_cw).any():
-            print("[MOS WARNING] g_cw为inf！")
+        # 安全回退策略：检测异常并输出诊断信息
+        warnings = []
+        if g_ce is None: warnings.append("g_ce为空")
+        if g_cw is None: warnings.append("g_cw为空")
+        if g_ce is not None and torch.isnan(g_ce).any(): warnings.append("g_ce为nan")
+        if g_cw is not None and torch.isnan(g_cw).any(): warnings.append("g_cw为nan")
+        if g_ce is not None and torch.isinf(g_ce).any(): warnings.append("g_ce为inf")
+        if g_cw is not None and torch.isinf(g_cw).any(): warnings.append("g_cw为inf")
+
+        print(f"[MOS WARNING] ⚠️ 检测到代理梯度异常，启动安全回退策略！({', '.join(warnings)})")
+
         target_ce = benign_mean
         target_cw = benign_mean
-        
-        # 【填补黑洞】：绝不能给 0 向量！给一个长度为安全半径 10%、方向与良性均值相同的推力
-        # 保证 Perturbation Norm 必定 > 0，让下一轮的 historical_pop 拥有活下去的遗传火种
+
+        # 【填补黑洞】：给一个长度为安全半径 10%、方向与良性均值相同的推力
         safe_spark = krum_radius * 0.1
         benign_dir = benign_mean / (torch.norm(benign_mean) + 1e-9)
-        
+
         g_ce_unit = benign_dir * safe_spark
         g_cw_unit = benign_dir * safe_spark
         g_combined_unit = benign_dir * safe_spark
-        # ============================================================
         
     target_ce = target_ce.detach()
     target_cw = target_cw.detach()
-    # ====================================================================
 
-# ================= 修复1：动态适配与“相对扰动”平移 =================
+    # ================= 修复1：动态适配与”相对扰动”平移 =================
     if historical_pop is not None:
         historical_pop = historical_pop.to(device)
         hist_K = historical_pop.shape[0]
@@ -379,18 +356,16 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         malicious_set = benign_mean.clone().detach().repeat(K, 1) + \
                         torch.randn(K, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
         
-        # 【关键修改】：将前几个恶意个体直接替换为沿着指导方向走到极致的“精英种子”
-        # 确保 target_ce 和 target_cw 的距离在 Krum 允许的范围内 (前面建议修改的 krum_radius * 0.8)
+    # 【关键修改】：将前几个恶意个体直接替换为沿着指导方向走到极致的”精英种子”
     if g_ce is not None and g_cw is not None:
         if K >= 1:
             malicious_set[0] = target_ce  # 极致的 CE 破坏者
         if K >= 2:
             malicious_set[1] = target_cw  # 极致的 CW 破坏者
         if K >= 3:
-                # 沿着混合方向的破坏者
+            # 沿着混合方向的破坏者
             scale_factor = krum_radius * 0.95
             malicious_set[2] = benign_mean + scale_factor * g_combined_unit
-    # =========================================================================
 
     # 1. 解析传入的 loss_mask 参数 (默认全开，即4位掩码 '1111')
     # 支持传入短于4位的字符串（右侧补'0'），或长于4位的字符串（截取前4位）
@@ -512,55 +487,38 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
 
     # 进化参数
     generations = getattr(args, 'nsga_generations', 100)
-    offspring_size = K
-    mutation_sigma = 0.02 * torch.norm(upper_bound - lower_bound)
-    mutation_sigma = float(mutation_sigma)
+    mutation_sigma = min(float(0.02 * torch.norm(upper_bound - lower_bound)), 1.0)
     if mutation_sigma <= 1e-12:
         mutation_sigma = 1e-6
-    mutation_sigma = min(mutation_sigma, 1.0)  # 防止过大
 
-    # 引入 archive 作为跨代记忆，初始时为空
+    # 引入 archive 作为跨代记忆
     archive = malicious_set.clone().detach()
     archive_size = K
 
-    # 最大允许偏移阈值（固定值，后续可改为历史窗口动态估计）
+    # 最大允许偏移阈值
     max_dev_threshold = getattr(args, 'max_dev_threshold', 10000.0)
-    # 惩罚系数（用于对超过阈值的个体施加软惩罚，避免使用巨大的常数）
     large_norm_penalty_coeff = getattr(args, 'large_norm_penalty_coeff', 1e3)
 
     # ================= 修改 3：添加 PCA-aware 约束（DNC 专用核心武器）=================
     def compute_pca_constraint(pop, benign_grads, benign_mean, device):
-        """
-        计算恶意梯度在良性梯度主成分上的投影约束
-
-        原理：DNC 通过 SVD 找到第一主成分，计算异常分数 = ((grad - mu) @ v)^2
-        我们必须显式约束在主方向上的投影，避免被检测
-        """
+        """计算恶意梯度在良性梯度主成分上的投影约束"""
         P = pop.shape[0]
         benign_centered = benign_grads - benign_mean
 
         try:
-            # SVD 分解（和 DNC 一致）
             U, S, V = torch.linalg.svd(benign_centered, full_matrices=False)
-            # V 的形状：(num_params, num_params)，每列是一个主成分
+            num_principal_components = min(5, V.shape[0])
+            principal_dirs = V[:num_principal_components, :]
 
-            # 计算恶意梯度在多个主成分上的投影
-            num_principal_components = min(5, V.shape[1])  # 前 5 个主成分
-            principal_dirs = V[:, :num_principal_components].T  # (5, num_params)
+            mal_deviation = pop - benign_mean
+            projections = torch.matmul(mal_deviation, principal_dirs.T)
 
-            # 计算投影距离（shape: (P, 5)）
-            mal_deviation = pop - benign_mean  # (P, num_params)
-            projections = torch.matmul(mal_deviation, principal_dirs.T)  # (P, 5)
-
-            # 加权求和（第一主成分权重最大）
             weights = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1], device=device)[:num_principal_components]
-            l_pca_projection = torch.sum(projections.abs() * weights, dim=1)  # (P,)
+            l_pca_projection = torch.sum(projections.abs() * weights, dim=1)
 
-            # 归一化（相对于良性梯度在主成分上的投影范围）
-            benign_projections = torch.matmul(benign_centered, principal_dirs.T)  # (N_benign, 5)
+            benign_projections = torch.matmul(benign_centered, principal_dirs.T)
             benign_proj_std = benign_projections.std(dim=0) + 1e-9
             l_pca_normalized = l_pca_projection / (benign_proj_std * weights).sum()
-
         except Exception as e:
             print(f"[MOS WARNING] PCA constraint SVD failed: {e}, using fallback")
             l_pca_normalized = torch.zeros(P, device=device)
@@ -568,38 +526,27 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         return l_pca_normalized
 
     def compute_subspace_constraint(pop, benign_grads, benign_mean, device, num_samples=3):
-        """
-        计算子空间鲁棒性约束
-
-        原理：模拟 DNC 的随机采样（1000 维），确保在任意子空间上都不被检测
-        """
+        """计算子空间鲁棒性约束，模拟 DNC 的随机采样"""
         P = pop.shape[0]
         l_subspace_max = torch.zeros(P, device=device)
 
         for _ in range(num_samples):
-            # 随机采样 1000 维
             sampled_dims = torch.randperm(benign_mean.numel(), device=device)[:1000]
-
-            # 在子空间上计算异常分数（简化版 DNC）
             benign_sub = benign_grads[:, sampled_dims]
             benign_sub_mean = benign_sub.mean(dim=0)
             benign_sub_centered = benign_sub - benign_sub_mean
 
             try:
                 _, _, V_sub = torch.linalg.svd(benign_sub_centered, full_matrices=False)
-                v_sub = V_sub[:, 0]  # 子空间第一主成分
+                v_sub = V_sub[0, :]
 
-                # 计算恶意梯度在这个子空间上的异常分数
                 mal_sub = pop[:, sampled_dims]
                 mal_sub_deviation = mal_sub - benign_sub_mean
                 sub_scores = (mal_sub_deviation @ v_sub).abs()
-
-                # 取所有子空间采样中的最大值（最坏情况）
                 l_subspace_max = torch.max(l_subspace_max, sub_scores)
             except:
                 continue
 
-        # 归一化
         try:
             benign_sub_scores = torch.abs((benign_sub_centered @ v_sub))
             benign_sub_std = benign_sub_scores.std() + 1e-9
@@ -636,14 +583,11 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         malicious_mean_p = torch.mean(pop, dim=0)
         l_group_p = torch.norm(pop - malicious_mean_p, dim=1)
 
-            # 符号损失
-# 定义温度系数 k (可以作为一个超参数调优，先从 10.0 开始)
-        temperature_k = 10.0
-
+        # 逐层符号和范数损失
         l_sign_layer_max_p = torch.zeros(P, device=device)
         l_norm_layer_max_p = torch.zeros(P, device=device)
 
-        for name, start_idx, end_idx in layer_dims:
+        for _, start_idx, end_idx in layer_dims:
             mal_layer = pop[:, start_idx:end_idx]
             ben_layer_all = benign_grads[:, start_idx:end_idx]
             ben_layer_norms = torch.norm(ben_layer_all, dim=1)
@@ -660,72 +604,40 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         excess_lasa_p = torch.relu(deviation_p - 0.1 * benign_std)
         l_lasa_norm_p = torch.norm(excess_lasa_p, dim=1)
 
-        # 输出层 neuron magnitude（保留计算但不纳入最终目标列表）
-        mal_out_w_p = pop[:, idx_w_start:idx_w_end].view(P, num_classes, -1)
-        mal_out_b_p = pop[:, idx_b_start:idx_b_end].view(P, num_classes, 1)
-        mal_out_params_p = torch.cat([mal_out_w_p, mal_out_b_p], dim=2)
-        neuron_norms_p = torch.norm(mal_out_params_p, dim=2)
-        with torch.no_grad():
-            ben_out_w = benign_mean[idx_w_start:idx_w_end].view(num_classes, -1)
-            ben_out_b = benign_mean[idx_b_start:idx_b_end].view(num_classes, 1)
-            ben_out_params = torch.cat([ben_out_w, ben_out_b], dim=1)
-            ben_neuron_norms = torch.norm(ben_out_params, dim=1)
-        excess_magnitude_p = torch.relu(neuron_norms_p - ben_neuron_norms.unsqueeze(0))
-        l_output_magnitude_p = torch.norm(excess_magnitude_p, dim=1)
-
-        # ================================================================
-        # 合并幅度相关的同质化损失为单一的 l_magnitude_p（用于缓解维数灾难）
-        # 可调权重（便于后续调参）：
-        krum_weight = 1.0
-        layer_weight = 1.0
-        lasa_weight = 0.5
-        # l_krum_p, l_lasa_norm_p, l_norm_layer_max_p 都是形状为 (P,) 的张量
-        l_magnitude_p = (krum_weight * l_krum_p) + (layer_weight * l_norm_layer_max_p) + (lasa_weight * l_lasa_norm_p)
-        # 注意：不再将 l_output_magnitude_p 纳入最终目标列表（其权重被移除）
-        # ================================================================
+        # 合并幅度相关的同质化损失为单一的 l_magnitude_p
+        l_magnitude_p = l_krum_p + l_norm_layer_max_p + 0.5 * l_lasa_norm_p
 
         # ================= 新增：PCA 和子空间约束 =================
-        # 只在 DNC 启用时计算这些约束
         if use_dnc:
             l_pca_p = compute_pca_constraint(pop, benign_grads, benign_mean, device)
-            if getattr(args, 'enable_subspace_constraint', True):
-                l_subspace_p = compute_subspace_constraint(pop, benign_grads, benign_mean, device, num_samples=3)
-            else:
-                l_subspace_p = torch.zeros(P, device=device)
+            l_subspace_p = compute_subspace_constraint(pop, benign_grads, benign_mean, device, num_samples=3) \
+                if getattr(args, 'enable_subspace_constraint', True) else torch.zeros(P, device=device)
         else:
             l_pca_p = torch.zeros(P, device=device)
             l_subspace_p = torch.zeros(P, device=device)
-        # =========================================================
 
-        # 扩展后的目标列表：7 个目标
+        # 扩展后的目标列表
         all_possible_losses_p = [
-            #l_combined_p,   # Index 0: 攻击破坏性
             l_ce,               # Index 0: CE 攻击性
             l_cw,               # Index 1: CW 攻击性
             l_magnitude_p,      # Index 2: 合并后的幅度约束
             l_group_p,          # Index 3: 拓扑/群体约束
             l_sign_layer_max_p, # Index 4: 符号一致性约束
-            l_pca_p,            # Index 5: PCA 主成分约束（新增）
-            l_subspace_p        # Index 6: 子空间鲁棒性约束（新增）
+            l_pca_p,            # Index 5: PCA 主成分约束
+            l_subspace_p        # Index 6: 子空间鲁棒性约束
         ]
 
-        active_losses_p = []
-        for i, bit in enumerate(loss_mask):
-            if bit == '1':
-                active_losses_p.append(all_possible_losses_p[i])
+        active_losses_p = [all_possible_losses_p[i] for i, bit in enumerate(loss_mask) if bit == '1']
 
-        # 如果越界严重，保留原始的 box 惩罚（较小概率触发）
+        # 越界惩罚和大范数惩罚
         is_out_of_bounds = (torch.sum(excess_lower_p + excess_upper_p, dim=1) > 0.01).float()
         penalty = is_out_of_bounds * 1e5
 
-        # 对超出范数阈值的个体给予软惩罚，避免使用巨大常数造成副作用
         current_norms = torch.norm(pop - benign_mean, dim=1)
         large_norm_excess = torch.relu(current_norms - max_dev_threshold)
         large_norm_penalty = large_norm_excess * large_norm_penalty_coeff
 
         combined_penalty = penalty + large_norm_penalty
-
-        # 将 penalty 加到所有 active_losses 上（每个个体都会累加惩罚）
         raw_losses_p = torch.stack(active_losses_p) + combined_penalty.unsqueeze(0)
 
         return raw_losses_p
@@ -826,19 +738,17 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
                 break
         archive = combined[new_archive_idx].clone().detach() if new_archive_idx else archive
 
-    # 还原代码 (保持不变)
+    # 还原代码并输出监控信息
     optimized_grads = malicious_set.detach()
     for i in range(K):
         all_updates[i] = vector_to_net_dict(optimized_grads[i], copy.deepcopy(all_updates[i]))
 
-    historical_perturbation = (malicious_set - benign_mean).detach()
     # ================= 探针 3：监控历史扰动是否无限滚雪球 =================
     historical_perturbation = (malicious_set - benign_mean).detach()
     pert_norm = torch.norm(historical_perturbation, dim=1).mean().item()
     print(f"[MOS LOG] 最终输出的恶意扰动平均范数 (Perturbation Norm): {pert_norm:.4f}")
     print("-" * 50)
-    # ==================================================================
-    
+
     return all_updates, historical_perturbation
 
 
