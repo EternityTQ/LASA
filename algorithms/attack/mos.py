@@ -4,6 +4,13 @@ import torch.nn.functional as F
 import copy
 from .lie import vector_to_net_dict
 
+# 梯度冲突分析模块（可选导入）
+try:
+    from .gradient_conflict_analyzer import run_gradient_conflict_analysis
+    CONFLICT_ANALYZER_AVAILABLE = True
+except ImportError:
+    CONFLICT_ANALYZER_AVAILABLE = False
+
 def compute_surrogate_guidance(global_model, poison_images, target_labels, criterion_ce, args=None):
     """
     计算多代理损失的指导梯度（改进版：分层覆盖 + 战略稀疏化）
@@ -163,6 +170,11 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     device = args.device if hasattr(args, 'device') else 'cpu'
     K = malicious_attackers_this_round
 
+    # ================= 核心修改：固定进化种群大小 =================
+    EVOLUTION_POP_SIZE = getattr(args, 'evo_pop_size', 10)  # 固定为 30 个个体
+    print(f"[MOS LOG] 🧬 进化模式：固定种群大小 = {EVOLUTION_POP_SIZE}，目标恶意客户端数 K = {K}")
+    # ============================================================
+
     # --- 1. 数据准备与层维度记录 ---
     all_updates_flatten = []
     layer_dims = []  # 记录每一层在 flatten 向量中的位置
@@ -265,6 +277,29 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
             benign_grads, benign_mean, device, num_samples=5
         )
         print(f"[MOS LOG] DNC 模式启动 - 敏感维度占比: {(sensitivity_scores > sensitivity_scores.median()).float().mean():.2%}")
+
+    # ================= 新增：梯度冲突分析（可选）=================
+    if CONFLICT_ANALYZER_AVAILABLE and getattr(args, 'enable_conflict_analysis', False):
+        print(f"\n[MOS LOG] 🔬 启动梯度冲突分析...")
+        try:
+            _, _ = run_gradient_conflict_analysis(
+                all_updates=all_updates,
+                args=args,
+                malicious_attackers_this_round=malicious_attackers_this_round,
+                g_ce=g_ce,
+                g_cw=g_cw,
+                benign_grads=benign_grads,
+                benign_mean=benign_mean,
+                benign_std=benign_std,
+                krum_radius=krum_radius,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                survival_mask=survival_mask,
+                layer_dims=layer_dims
+            )
+        except Exception as e:
+            print(f"[MOS WARNING] 梯度冲突分析失败: {e}")
+    # ============================================================
     else:
         # 回退到全 1 掩码（不做限制，适用于其他防御）
         survival_mask = torch.ones_like(benign_mean)
@@ -324,48 +359,50 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     target_ce = target_ce.detach()
     target_cw = target_cw.detach()
 
-    # ================= 修复1：动态适配与”相对扰动”平移 =================
+    # ================= 修改：初始化固定大小的进化种群 =================
+    # 使用 EVOLUTION_POP_SIZE 个个体进行进化，而不是 K 个
     if historical_pop is not None:
         historical_pop = historical_pop.to(device)
-        hist_K = historical_pop.shape[0]
-        
-        if hist_K == K:
-            base_perturbation = historical_pop
-        elif hist_K > K:
-            base_perturbation = historical_pop[:K]
-        else:
-            indices = torch.randint(0, hist_K, (K - hist_K,), device=device)
-            extra_pop = historical_pop[indices]
-            base_perturbation = torch.cat([historical_pop, extra_pop], dim=0)
-            
-        # 紧箍咒：计算出历史记忆当前的长度
-        hist_norms = torch.norm(base_perturbation, dim=1, keepdim=True)
-        # 允许历史记忆存在的最大长度（例如：当前轮次 krum_radius 的 1.5 倍）
-        max_allowed_hist = krum_radius * 3 
-        # 如果超标了，就等比例压缩它；如果没超标，保持原样
-        shrink_factor = torch.clamp(max_allowed_hist / (hist_norms + 1e-9), max=1.0)
-        base_perturbation = base_perturbation * shrink_factor
+        hist_P = historical_pop.shape[0]
 
-        # 衰减系数依然保留，进一步维稳
-        decay_factor = 0.95 
-        malicious_set = benign_mean + (base_perturbation * decay_factor) + \
-                        torch.randn(K, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
+        # 适配到固定种群大小
+        if hist_P == EVOLUTION_POP_SIZE:
+            evolution_pop = historical_pop
+        elif hist_P > EVOLUTION_POP_SIZE:
+            evolution_pop = historical_pop[:EVOLUTION_POP_SIZE]
+        else:
+            indices = torch.randint(0, hist_P, (EVOLUTION_POP_SIZE - hist_P,), device=device)
+            extra_pop = historical_pop[indices]
+            evolution_pop = torch.cat([historical_pop, extra_pop], dim=0)
+
+        # 紧箍咒：限制历史记忆的幅度
+        hist_norms = torch.norm(evolution_pop, dim=1, keepdim=True)
+        max_allowed_hist = krum_radius * 3
+        shrink_factor = torch.clamp(max_allowed_hist / (hist_norms + 1e-9), max=1.0)
+        evolution_pop = evolution_pop * shrink_factor
+
+        # 衰减系数
+        decay_factor = 0.95
+        evolution_pop = benign_mean + (evolution_pop - benign_mean) * decay_factor + \
+                        torch.randn(EVOLUTION_POP_SIZE, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
     else:
-        # 第一轮攻击时，没有历史经验，从头开始探索
-        # 先生成纯随机的基底
-        malicious_set = benign_mean.clone().detach().repeat(K, 1) + \
-                        torch.randn(K, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
-        
-    # 【关键修改】：将前几个恶意个体直接替换为沿着指导方向走到极致的”精英种子”
+        # 第一轮：初始化固定大小的进化种群
+        evolution_pop = benign_mean.clone().detach().repeat(EVOLUTION_POP_SIZE, 1) + \
+                        torch.randn(EVOLUTION_POP_SIZE, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
+
+    # 【精英种子注入】：将前几个个体替换为沿指导方向的精英
     if g_ce is not None and g_cw is not None:
-        if K >= 1:
-            malicious_set[0] = target_ce  # 极致的 CE 破坏者
-        if K >= 2:
-            malicious_set[1] = target_cw  # 极致的 CW 破坏者
-        if K >= 3:
+        if EVOLUTION_POP_SIZE >= 1:
+            evolution_pop[0] = target_ce  # 极致的 CE 破坏者
+        if EVOLUTION_POP_SIZE >= 2:
+            evolution_pop[1] = target_cw  # 极致的 CW 破坏者
+        if EVOLUTION_POP_SIZE >= 3:
             # 沿着混合方向的破坏者
             scale_factor = krum_radius * 0.95
-            malicious_set[2] = benign_mean + scale_factor * g_combined_unit
+            evolution_pop[2] = benign_mean + scale_factor * g_combined_unit
+
+    # 用于进化的种群（固定大小）
+    malicious_set = evolution_pop
 
     # 1. 解析传入的 loss_mask 参数 (默认全开，即4位掩码 '1111')
     # 支持传入短于4位的字符串（右侧补'0'），或长于4位的字符串（截取前4位）
@@ -491,9 +528,9 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
     if mutation_sigma <= 1e-12:
         mutation_sigma = 1e-6
 
-    # 引入 archive 作为跨代记忆
+    # 引入 archive 作为跨代记忆（使用固定种群大小）
     archive = malicious_set.clone().detach()
-    archive_size = K
+    archive_size = EVOLUTION_POP_SIZE
 
     # 最大允许偏移阈值
     max_dev_threshold = getattr(args, 'max_dev_threshold', 10000.0)
@@ -557,7 +594,7 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         return l_subspace_normalized
 
     def compute_losses(pop):
-        # pop: (P, D)
+        # pop: (P, D) - P 是当前种群大小（进化时为 EVOLUTION_POP_SIZE）
         P = pop.shape[0]
         # direction losses
         current_deviation = pop - benign_mean
@@ -650,21 +687,21 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         # 评估当前种群
         raw_current = compute_losses(malicious_set)
         norm_current = normalizer.update_and_normalize(raw_current)
-        objs_current = norm_current.detach()  # (M, N)
+        objs_current = norm_current.detach()  # (M, P)
 
-        # 选择父代（通过 NSGA-III 从当前种群中选择）
-        parent_idx = nsga3_select(objs_current, malicious_set, K)
+        # 选择父代（通过 NSGA-III 从当前种群中选择，使用固定种群大小）
+        parent_idx = nsga3_select(objs_current, malicious_set, EVOLUTION_POP_SIZE)
         parents = malicious_set[parent_idx]
 
         # 生成子代：使用 SBX（Simulated Binary Crossover）+ 生存掩码位置上的小幅高斯突变
-        num_children = K
-        perm = torch.randperm(K)
+        num_children = EVOLUTION_POP_SIZE
+        perm = torch.randperm(EVOLUTION_POP_SIZE)
         children = []
         crossover_prob = getattr(args, 'sbx_crossover_prob', 0.9)
         eta = float(getattr(args, 'sbx_eta', 15.0))
         for i in range(0, num_children, 2):
-            p1 = parents[perm[i % K]]
-            p2 = parents[perm[(i+1) % K]]
+            p1 = parents[perm[i % EVOLUTION_POP_SIZE]]
+            p2 = parents[perm[(i+1) % EVOLUTION_POP_SIZE]]
             D = p1.numel()
             # SBX per-dimension
             u = torch.rand(D, device=device)
@@ -700,7 +737,7 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
 
             children.append(child1)
             children.append(child2)
-        offspring = torch.stack(children)[:K]
+        offspring = torch.stack(children)[:EVOLUTION_POP_SIZE]
 
         # 合并：当前、子代、以及 archive（跨代记忆）
         combined = torch.cat([malicious_set, offspring, archive], dim=0)
@@ -708,8 +745,8 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
         norm_combined = normalizer.update_and_normalize(raw_combined)
         objs_combined = norm_combined.detach()
 
-        # 从 combined 中选择下一代
-        selected_idx = nsga3_select(objs_combined, combined, K)
+        # 从 combined 中选择下一代（保持固定种群大小）
+        selected_idx = nsga3_select(objs_combined, combined, EVOLUTION_POP_SIZE)
         malicious_set = combined[selected_idx].clone().detach()
         
         # ================= 新策略：基于固定阈值的检测与强制收缩 =================
@@ -738,15 +775,45 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
                 break
         archive = combined[new_archive_idx].clone().detach() if new_archive_idx else archive
 
-    # 还原代码并输出监控信息
-    optimized_grads = malicious_set.detach()
+    # ================= 核心修改：选出最优模板并复制 K 份 =================
+    # 进化完成后，从最终的 malicious_set 中选出排名第一的最优个体作为模板
+    final_losses = compute_losses(malicious_set)
+    final_normalized = normalizer.update_and_normalize(final_losses)
+    final_objs = final_normalized.detach()
+
+    # 使用 NSGA-III 排序，取第一个非支配前沿的第一个个体作为最优模板
+    final_fronts = nondominated_sort(final_objs)
+    best_idx = final_fronts[0][0]  # 第一个前沿的第一个个体
+    best_template = malicious_set[best_idx].clone().detach()
+
+    print(f"[MOS LOG] 🏆 进化完成！最优模板索引: {best_idx}")
+    print(f"[MOS LOG] 📋 将最优模板复制 {K} 份并添加微小噪声以规避聚类检测...")
+
+    # 复制 K 份并添加极微小的高斯噪声（避免完全一致被 DNC/Krum 识破）
+    noise_scale = getattr(args, 'template_noise_scale', 1e-4)  # 默认 1e-4，可通过 args 调整
+    optimized_grads = best_template.unsqueeze(0).repeat(K, 1)  # 复制 K 份
+
+    # 添加微小的、不同的高斯噪声到每一份
+    noise = torch.randn(K, best_template.shape[0], device=device) * noise_scale * benign_std
+    optimized_grads = optimized_grads + noise
+
+    print(f"[MOS LOG] 🔊 噪声强度: {noise_scale} * benign_std")
+    print(f"[MOS LOG] 🔊 实际噪声范数范围: [{torch.norm(noise, dim=1).min().item():.6f}, {torch.norm(noise, dim=1).max().item():.6f}]")
+    # ================================================================
     for i in range(K):
         all_updates[i] = vector_to_net_dict(optimized_grads[i], copy.deepcopy(all_updates[i]))
 
-    # ================= 探针 3：监控历史扰动是否无限滚雪球 =================
-    historical_perturbation = (malicious_set - benign_mean).detach()
-    pert_norm = torch.norm(historical_perturbation, dim=1).mean().item()
-    print(f"[MOS LOG] 最终输出的恶意扰动平均范数 (Perturbation Norm): {pert_norm:.4f}")
+    # ================= 探针 3：监控最终扰动 =================
+    # 这里保存的是最优模板的扰动（用于下一轮的 historical_pop）
+    # 注意：我们只保存模板本身，而不是 K 份副本
+    historical_perturbation = (best_template - benign_mean).unsqueeze(0).detach()  # shape: (1, D)
+    pert_norm = torch.norm(historical_perturbation).item()
+    print(f"[MOS LOG] 最优模板扰动范数 (Template Perturbation Norm): {pert_norm:.4f}")
+
+    # 监控最终输出的 K 个恶意梯度的统计信息
+    output_deviations = optimized_grads - benign_mean
+    output_norms = torch.norm(output_deviations, dim=1)
+    print(f"[MOS LOG] K={K} 个输出梯度的范数: min={output_norms.min().item():.4f}, max={output_norms.max().item():.4f}, mean={output_norms.mean().item():.4f}")
     print("-" * 50)
 
     return all_updates, historical_perturbation
