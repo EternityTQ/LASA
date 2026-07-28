@@ -1,449 +1,878 @@
-﻿
+"""
+MOS-Attack (Multi-Objective Stealth Attack) - Simplified Paper Version
+
+This is a clean, paper-ready implementation focusing on:
+- Dual-objective NSGA-II optimization
+- Two core constraints: Radial + Layer-normalized Sign
+- Clear, interpretable constraint scoring
+- Minimal feature set for reproducibility
+
+For experimental features, see mos_experimental.py
+"""
+
 import torch
 import torch.nn.functional as F
 import copy
-import random
 from .lie import vector_to_net_dict
-
-# 梯度冲突分析模块（可选导入）
-try:
-    from .gradient_conflict_analyzer import run_gradient_conflict_analysis
-    CONFLICT_ANALYZER_AVAILABLE = True
-except ImportError:
-    CONFLICT_ANALYZER_AVAILABLE = False
+from typing import Dict, List, Tuple, Optional
 
 
 # ============================================================================
-# 显存监控函数
+# Type Annotations
 # ============================================================================
-def log_cuda_memory(tag, enabled=False):
-    """GPU 显存监控（仅在 enabled=True 时打印）"""
-    if not enabled or not torch.cuda.is_available():
-        return
-
-    allocated = torch.cuda.memory_allocated() / 1024**3
-    reserved = torch.cuda.memory_reserved() / 1024**3
-    peak_allocated = torch.cuda.max_memory_allocated() / 1024**3
-    peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
-
-    print(
-        f"[CUDA] {tag}: "
-        f"allocated={allocated:.2f} GB, "
-        f"reserved={reserved:.2f} GB, "
-        f"peak_allocated={peak_allocated:.2f} GB, "
-        f"peak_reserved={peak_reserved:.2f} GB"
-    )
+TensorDict = Dict[str, torch.Tensor]
+LayerDims = List[Tuple[str, int, int]]
 
 
 # ============================================================================
-# 攻击预算投影函数
+# Constraint Plugin Base
 # ============================================================================
-def project_to_attack_budget(pop, benign_mean, max_dev_threshold):
+class ConstraintPlugin:
+    """Base class for constraint plugins"""
+
+    def __init__(self, name: str, weight: float = 1.0):
+        self.name = name
+        self.weight = weight
+        self.threshold: Optional[torch.Tensor] = None
+
+    def fit(self, benign_updates: torch.Tensor, benign_mean: torch.Tensor,
+            context: Dict) -> None:
+        """Estimate threshold from benign updates"""
+        raise NotImplementedError
+
+    def loss(self, population: torch.Tensor, benign_mean: torch.Tensor,
+             context: Dict) -> torch.Tensor:
+        """Compute constraint loss for population"""
+        raise NotImplementedError
+
+    def score(self, population: torch.Tensor, benign_mean: torch.Tensor,
+              context: Dict, eps: float = 1e-12) -> torch.Tensor:
+        """Convert loss to score via smooth mapping"""
+        loss_val = self.loss(population, benign_mean, context)
+        ratio = loss_val / (self.threshold + eps)
+        # Smooth non-saturating score: 1/(1+r)
+        return 1.0 / (1.0 + ratio)
+
+
+
+
+# ============================================================================
+# Radial Constraint (Distance from benign mean)
+# ============================================================================
+class RadialConstraint(ConstraintPlugin):
+    """Radial distance constraint (L2 norm from benign mean)"""
+
+    def __init__(self, weight: float = 1.0, quantile: float = 0.95):
+        super().__init__(name='radial', weight=weight)
+        self.quantile = quantile
+
+    def fit(self, benign_updates: torch.Tensor, benign_mean: torch.Tensor,
+            context: Dict) -> None:
+        """Estimate threshold from benign updates' radial distances"""
+        dists = torch.norm(benign_updates - benign_mean, dim=1)
+        self.threshold = torch.quantile(dists, q=self.quantile)
+        # Ensure minimum threshold
+        self.threshold = torch.clamp(self.threshold, min=1e-6)
+
+    def loss(self, population: torch.Tensor, benign_mean: torch.Tensor,
+             context: Dict) -> torch.Tensor:
+        """Compute L2 distance from benign mean"""
+        return torch.norm(population - benign_mean, dim=1)
+
+
+# ============================================================================
+# Sign Constraint (Layer-normalized sign violation)
+# ============================================================================
+class SignConstraint(ConstraintPlugin):
+    """Layer-normalized sign constraint"""
+
+    def __init__(self, weight: float = 0.5, quantile: float = 0.95,
+                 layer_reduce: str = 'quantile', layer_quantile: float = 0.9):
+        super().__init__(name='sign', weight=weight)
+        self.quantile = quantile
+        self.layer_reduce = layer_reduce
+        self.layer_quantile = layer_quantile
+
+    def fit(self, benign_updates: torch.Tensor, benign_mean: torch.Tensor,
+            context: Dict) -> None:
+        """Estimate threshold from benign updates"""
+        layer_dims = context['layer_dims']
+        benign_losses = self._compute_layer_losses(
+            benign_updates, benign_mean, layer_dims
+        )
+        self.threshold = torch.quantile(benign_losses, q=self.quantile)
+        self.threshold = torch.clamp(self.threshold, min=1e-6)
+
+
+    def _compute_layer_losses(self, population: torch.Tensor,
+                             benign_mean: torch.Tensor,
+                             layer_dims: LayerDims) -> torch.Tensor:
+        """Compute layer-normalized sign losses"""
+        layer_losses = []
+
+        for layer_name, start_idx, end_idx in layer_dims:
+            layer_pop = population[:, start_idx:end_idx]
+            layer_mean = benign_mean[start_idx:end_idx]
+
+            # Sign violation: negative dot product with mean's sign
+            sign_violation = -layer_pop * torch.sign(layer_mean).unsqueeze(0)
+
+            # ReLU to keep only violations, then normalize by layer norm
+            violation_norm = torch.norm(torch.relu(sign_violation), dim=1)
+            reference_norm = torch.norm(layer_mean) + 1e-12
+            layer_loss = violation_norm / reference_norm
+
+            layer_losses.append(layer_loss)
+
+        layer_losses = torch.stack(layer_losses, dim=0)  # (L, P)
+
+        # Aggregate across layers
+        if self.layer_reduce == 'max':
+            return layer_losses.max(dim=0)[0]
+        elif self.layer_reduce == 'mean':
+            return layer_losses.mean(dim=0)
+        elif self.layer_reduce == 'quantile':
+            return torch.quantile(layer_losses, q=self.layer_quantile, dim=0)
+        else:
+            return layer_losses.max(dim=0)[0]
+
+    def loss(self, population: torch.Tensor, benign_mean: torch.Tensor,
+             context: Dict) -> torch.Tensor:
+        """Compute sign constraint loss"""
+        layer_dims = context['layer_dims']
+        return self._compute_layer_losses(population, benign_mean, layer_dims)
+
+
+
+# ============================================================================
+# Surrogate Guidance Construction
+# ============================================================================
+def compute_surrogate_guidance(
+    global_model: torch.nn.Module,
+    poison_images: torch.Tensor,
+    target_labels: torch.Tensor,
+    criterion_ce,
+    args=None
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    将种群投影到攻击预算范围内
-    返回：(投影后的种群, 裁剪掩码, 投影前的范数)
-    """
-    centered = pop - benign_mean
-    norms = torch.norm(centered, dim=1, keepdim=True)
+    Compute CE and CW surrogate gradients
 
-    clipped_mask = norms.squeeze(1) > max_dev_threshold
-
-    scales = torch.clamp(
-        max_dev_threshold / (norms + 1e-12),
-        max=1.0,
-    )
-
-    projected = benign_mean + centered * scales
-
-    return projected, clipped_mask, norms.squeeze(1)
-
-def compute_surrogate_guidance(global_model, poison_images, target_labels, criterion_ce, args=None):
-    """
-    计算多代理损失的指导梯度（改进版：分层覆盖 + 战略稀疏化）
-    修复：分离 CE 和 CW 的 forward，减少显存峰值
+    Returns:
+        g_ce: Cross-entropy guidance gradient
+        g_cw: CW margin loss guidance gradient
     """
     global_model.eval()
     device = poison_images.device
 
-    # ================= 第一次前向传播：CE Loss =================
-    global_model.zero_grad(set_to_none=True)
-
-    outputs_ce = global_model(poison_images)
-
-    # 数值稳定性监控
-    max_logit = outputs_ce.max().item()
-    min_logit = outputs_ce.min().item()
-    abs_max_logit = max(abs(max_logit), abs(min_logit))
-
-    logit_warning_threshold = getattr(args, 'logit_warning_threshold', 100.0)
-
-    print(f"\n[MOS LOG] Surrogate CE Forward - Max Logit: {max_logit:.2f}, Min Logit: {min_logit:.2f}")
-
-    if abs_max_logit > logit_warning_threshold:
-        print(f"[MOS WARNING] ⚠️ Logits 超过警告阈值 {logit_warning_threshold}，当前最大绝对值: {abs_max_logit:.2f}")
-        print(f"[MOS WARNING] ⚠️ 模型可能正在数值爆炸，建议检查学习率和梯度裁剪设置")
-
-    # 检查 NaN 或 Inf
-    if not torch.isfinite(outputs_ce).all():
-        print(f"[MOS ERROR] ⚠️⚠️⚠️ Logits 包含 NaN 或 Inf，返回安全回退梯度")
-        # 修复 9/10：使用 state_dict 计算正确长度
-        total_numel = sum(
-            tensor.numel()
-            for tensor in global_model.state_dict().values()
-        )
-        safe_fallback = torch.zeros(total_numel, device=device)
-        return safe_fallback.clone(), safe_fallback.clone()
-
-    # -----------------------------------------
-    # 代理目标 1：Cross Entropy (CE)
-    # -----------------------------------------
-    loss_ce = criterion_ce(outputs_ce, target_labels)
-    loss_ce.backward()
-
-    # ============ 分层梯度稀疏化（覆盖所有层，避免 DNC 采样盲区）============
-    named = list(global_model.named_parameters())
-
-    # 策略 1：对每一层都保留梯度，但按重要性稀疏化
-    layer_groups = {}
-    for n, p in named:
-        if p.grad is None:
-            continue
-        # 按层类型分组
-        if 'conv' in n.lower():
-            group = 'conv'
-        elif 'bn' in n.lower() or 'norm' in n.lower():
-            group = 'bn'
-        elif any(k in n.lower() for k in ('fc', 'classifier', 'head', 'linear', 'dense', 'out')):
-            group = 'classifier'
-        else:
-            group = 'other'
-
-        if group not in layer_groups:
-            layer_groups[group] = []
-        layer_groups[group].append((n, p))
-
-    # 策略 2：分层稀疏化比例（从 args 读取，提供默认值）
-    conv_sparsity = getattr(args, 'mos_conv_sparsity', 0.3) if args else 0.3
-    classifier_sparsity = getattr(args, 'mos_classifier_sparsity', 1.0) if args else 1.0
-
-    sparsity_ratio = {
-        'classifier': classifier_sparsity,  # 分类器层：100% 保留（最重要）
-        'conv': conv_sparsity,              # 卷积层：30% 保留（战略覆盖，避免 DNC 采样盲区）
-        'bn': 0.1,                          # BN 层：10% 保留（低优先级）
-        'other': 0.2                        # 其他层：20% 保留
-    }
-
-    # 策略 3：TopK 稀疏化（保留每层梯度绝对值最大的 k%）
-    for group, params_list in layer_groups.items():
-        ratio = sparsity_ratio.get(group, 0.2)
-        for n, p in params_list:
-            grad_flat = p.grad.flatten()
-            k = max(int(grad_flat.numel() * ratio), 1)  # 至少保留 1 个
-            _, topk_indices = torch.topk(grad_flat.abs(), k)
-
-            # 创建稀疏掩码
-            mask = torch.zeros_like(grad_flat)
-            mask[topk_indices] = 1.0
-
-            # 应用掩码（关键：保留原始梯度的幅度信息）
-            p.grad.data = (grad_flat * mask).view_as(p.grad)
-
-    # 提取稀疏化后的 g_ce（关键：必须与 all_updates 的 flatten 方式一致）
-    def extract_gradient_vector(model, named_dict, device):
-        """从模型中提取梯度向量，包含 parameters 和 buffers"""
+    def extract_gradient_vector(model):
+        """Extract flattened gradient vector from model state_dict"""
         g_list = []
+        named_params = dict(model.named_parameters())
+
         for name, tensor in model.state_dict().items():
-            if name in named_dict:
-                param = named_dict[name]
+            if name in named_params:
+                param = named_params[name]
                 if param.grad is not None:
                     g_list.append(param.grad.clone().flatten())
                 else:
                     g_list.append(torch.zeros(tensor.numel(), device=device))
             else:
+                # Non-trainable buffer
                 g_list.append(torch.zeros(tensor.numel(), device=device))
+
         return torch.cat(g_list) if g_list else torch.zeros(0, device=device)
 
-    named_dict = dict(named)
-    g_ce = extract_gradient_vector(global_model, named_dict, device)
-
-    del outputs_ce
-    del loss_ce
-
-    # -----------------------------------------
-    # 代理目标 2：Margin Loss (CW) - 深度破坏
-    # -----------------------------------------
+    # ===== CE Loss =====
     global_model.zero_grad(set_to_none=True)
+    outputs_ce = global_model(poison_images)
 
+    # Check for numerical issues
+    if not torch.isfinite(outputs_ce).all():
+        print("[MOS WARNING] CE logits contain NaN/Inf, using safe fallback")
+        total_numel = sum(t.numel() for t in global_model.state_dict().values())
+        safe_grad = torch.zeros(total_numel, device=device)
+        return safe_grad.clone(), safe_grad.clone()
+
+    loss_ce = criterion_ce(outputs_ce, target_labels)
+    loss_ce.backward()
+    g_ce = extract_gradient_vector(global_model)
+
+
+    del outputs_ce, loss_ce
+
+    # ===== CW Margin Loss =====
+    global_model.zero_grad(set_to_none=True)
     outputs_cw = global_model(poison_images)
 
-    # 参考论文中的 Marginal Loss 公式 [cite: 184]
-    # 让目标类的 logit 远大于其他所有类的最大 logit
+    # Extract correct class logits
     correct_logits = torch.gather(outputs_cw, 1, target_labels.unsqueeze(1)).squeeze(1)
 
-    # 把正确类别的 logit 设为极小值，方便找出第二大的 logit
+    # Find max other class logit
     outputs_clone = outputs_cw.clone()
     outputs_clone.scatter_(1, target_labels.unsqueeze(1), -1e4)
     max_other_logits, _ = torch.max(outputs_clone, dim=1)
 
-    # CW Loss: 希望 max_other - correct 越大越好 (即模型错得越离谱越好)
+    # CW loss: maximize (max_other - correct)
     loss_cw = torch.mean(torch.relu(max_other_logits - correct_logits + 20.0))
-
     loss_cw.backward()
+    g_cw = extract_gradient_vector(global_model)
 
-    # 提取并展平 CW 梯度
-    g_cw = extract_gradient_vector(global_model, named_dict, device)
-
-    del outputs_cw
-    del loss_cw
-    del outputs_clone
+    del outputs_cw, loss_cw, outputs_clone
 
     global_model.zero_grad(set_to_none=True)
 
     return g_ce, g_cw
 
-def compute_raw_constraint_losses(pop, benign_refs, centered=None):
+
+# ============================================================================
+# Attack Budget Projection
+# ============================================================================
+def project_to_attack_budget(
+    population: torch.Tensor,
+    benign_mean: torch.Tensor,
+    max_dev_threshold: float
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    计算原始约束损失
+    Project population to attack budget
+
+    Returns:
+        projected: Projected population
+        clipped_mask: Boolean mask of clipped individuals
+        pre_norms: Pre-projection norms
+    """
+    centered = population - benign_mean
+    norms = torch.norm(centered, dim=1, keepdim=True)
+
+    clipped_mask = norms.squeeze(1) > max_dev_threshold
+    scales = torch.clamp(max_dev_threshold / (norms + 1e-12), max=1.0)
+    projected = benign_mean + centered * scales
+
+    return projected, clipped_mask, norms.squeeze(1)
+
+
+
+# ============================================================================
+# Constraint Scoring and CV Computation
+# ============================================================================
+def compute_constraint_pass_score(
+    population: torch.Tensor,
+    benign_mean: torch.Tensor,
+    constraints: List[ConstraintPlugin],
+    context: Dict,
+    eps: float = 1e-12
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    """
+    Compute weighted constraint pass score
+
+    Returns:
+        total_score: Weighted average score (higher = more stealthy)
+        scores_dict: Individual constraint scores
+        losses_dict: Individual constraint losses
+    """
+    P = population.shape[0]
+    device = population.device
+
+    scores_dict = {}
+    losses_dict = {}
+    total_score = torch.zeros(P, device=device)
+    total_weight = 0.0
+
+    for constraint in constraints:
+        loss_val = constraint.loss(population, benign_mean, context)
+        score_val = constraint.score(population, benign_mean, context, eps)
+
+        scores_dict[constraint.name] = score_val
+        losses_dict[constraint.name] = loss_val
+
+        total_score += constraint.weight * score_val
+        total_weight += constraint.weight
+
+    # Normalize to [0, 1]
+    total_score = total_score / (total_weight + eps)
+
+    return total_score, scores_dict, losses_dict
+
+
+def compute_cv(
+    population: torch.Tensor,
+    benign_mean: torch.Tensor,
+    constraints: List[ConstraintPlugin],
+    context: Dict,
+    eps: float = 1e-12
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Compute Constraint Violation (CV)
+
+    CV = sum_c weight_c * max(loss_c / threshold_c - 1, 0)
+
+    Returns:
+        total_cv: Total constraint violation per individual
+        ratios_dict: loss/threshold ratio per constraint
+    """
+    P = population.shape[0]
+    device = population.device
+
+    total_cv = torch.zeros(P, device=device)
+    ratios_dict = {}
+
+    for constraint in constraints:
+        loss_val = constraint.loss(population, benign_mean, context)
+        ratio = loss_val / (constraint.threshold + eps)
+        ratios_dict[constraint.name] = ratio
+
+        violation = torch.relu(ratio - 1.0)
+        total_cv += constraint.weight * violation
+
+    return total_cv, ratios_dict
+
+
+
+# ============================================================================
+# NSGA-II: Non-dominated Sorting
+# ============================================================================
+def nondominated_sort(objectives: torch.Tensor) -> List[List[int]]:
+    """
+    NSGA-II non-dominated sorting
 
     Args:
-        pop: 种群张量 (P, D)
-        benign_refs: 良性参考字典
-        centered: 预计算的 (pop - benign_mean)，避免重复计算
+        objectives: (M, N) objective matrix (minimization form)
+
+    Returns:
+        fronts: List of Pareto fronts (each front is a list of indices)
     """
-    P = pop.shape[0]
-    device = benign_refs['device']
+    M, N = objectives.shape
+    device = objectives.device
 
-    benign_mean = benign_refs['mean']
-    benign_std = benign_refs['std']
-    layer_dims = benign_refs['layer_dims']
-    use_dnc = benign_refs['use_dnc']
+    # Domination tracking
+    S = [set() for _ in range(N)]  # S[p]: individuals dominated by p
+    n = torch.zeros(N, dtype=torch.int32, device=device)  # n[p]: count dominating p
+    rank = torch.full((N,), -1, dtype=torch.int32, device=device)
+    fronts = []
 
-    losses = {}
+    # Build domination relationships
+    for p in range(N):
+        for q in range(N):
+            if p == q:
+                continue
 
-    # 修复 15/10：使用传入的 centered 或计算一次
-    if centered is None:
-        centered = pop - benign_mean
+            # p dominates q if: all objectives <= and at least one <
+            less_eq = torch.all(objectives[:, p] <= objectives[:, q])
+            strictly_less = torch.any(objectives[:, p] < objectives[:, q])
 
-    losses['radial'] = torch.norm(centered, dim=1)
+            if less_eq and strictly_less:
+                S[p].add(q)
+            elif torch.all(objectives[:, q] <= objectives[:, p]) and \
+                 torch.any(objectives[:, q] < objectives[:, p]):
+                n[p] += 1
 
-    # 保留 'krum' 别名以兼容旧代码
-    losses['krum'] = losses['radial']
+        if n[p] == 0:
+            rank[p] = 0
 
-    # Sign 约束：使用 centered 避免重复计算
-    sign_layer_reduce = getattr(benign_refs.get('args'), 'sign_layer_reduce', 'quantile')
-    sign_layer_quantile = getattr(benign_refs.get('args'), 'sign_layer_quantile', 0.9)
-    sign_layer_losses = []
+    # Front 0
+    current_front = [i for i in range(N) if rank[i] == 0]
+    front_idx = 0
 
-    for _, start_idx, end_idx in layer_dims:
-        layer_centered = centered[:, start_idx:end_idx]
-        layer_mean = benign_mean[start_idx:end_idx]
+    # Build subsequent fronts
+    while current_front:
+        fronts.append(current_front)
+        next_front = []
 
-        # 符号违反：如果与均值符号相反，计算违反幅度
-        # 注意：这里用 layer_centered + layer_mean 得到原始值
-        layer_slice = layer_centered + layer_mean
-        sign_violation = -layer_slice * torch.sign(layer_mean).unsqueeze(0)
+        for p in current_front:
+            for q in S[p]:
+                n[q] -= 1
+                if n[q] == 0:
+                    rank[q] = front_idx + 1
+                    next_front.append(q)
 
-        # 归一化：避免大层主导
-        violation_norm = torch.norm(torch.relu(sign_violation), dim=1)
-        reference_norm = torch.norm(layer_mean) + 1e-12
-        layer_loss = violation_norm / reference_norm
+        front_idx += 1
+        current_front = next_front
 
-        sign_layer_losses.append(layer_loss)
+    return fronts
 
-    sign_layer_losses = torch.stack(sign_layer_losses, dim=0)  # (L, P)
 
-    # 层间聚合
-    if sign_layer_reduce == 'max':
-        losses['sign'] = sign_layer_losses.max(dim=0)[0]
-    elif sign_layer_reduce == 'mean':
-        losses['sign'] = sign_layer_losses.mean(dim=0)
-    elif sign_layer_reduce == 'quantile':
-        losses['sign'] = torch.quantile(sign_layer_losses, q=sign_layer_quantile, dim=0)
-    else:
-        losses['sign'] = sign_layer_losses.max(dim=0)[0]  # 回退
 
-    if use_dnc and benign_refs.get('pca_principal_dirs') is not None:
-        pca_principal_dirs = benign_refs['pca_principal_dirs']
-        pca_benign_proj_std = benign_refs['pca_benign_proj_std']
+# ============================================================================
+# NSGA-II: Crowding Distance
+# ============================================================================
+def crowding_distance(front_indices: List[int], objectives: torch.Tensor) -> torch.Tensor:
+    """
+    Compute crowding distance for a Pareto front
 
-        # 修复 15/10：使用传入的 centered
-        projections = torch.matmul(centered, pca_principal_dirs.T)  # (P, K)
+    Args:
+        front_indices: Indices of individuals in the front
+        objectives: (M, N) objective matrix
 
-        # 标准化投影
-        normalized_proj = projections.abs() / (pca_benign_proj_std.unsqueeze(0) + 1e-12)
+    Returns:
+        distances: Crowding distance for each individual in the front
+    """
+    M, _ = objectives.shape
+    F = len(front_indices)
+    device = objectives.device
 
-        # 加权求和（高阶成分权重递减）
-        num_components = pca_principal_dirs.shape[0]
-        weights = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1], device=device)[:num_components]
+    distances = torch.zeros(F, device=device)
 
-        losses['pca'] = torch.sum(normalized_proj * weights.unsqueeze(0), dim=1)
-    else:
-        losses['pca'] = torch.zeros(P, device=device)
+    # Edge case: 1-2 individuals get infinite distance
+    if F <= 2:
+        return torch.full((F,), float('inf'), device=device)
 
-    # ========================================================================
-    # 4. Subspace 约束：标准化的随机子空间得分
-    # ========================================================================
-    subspace_reduce = getattr(benign_refs.get('args'), 'subspace_reduce', 'max')
+    # For each objective dimension
+    for m in range(M):
+        obj_values = objectives[m, front_indices]
+        sorted_idx = torch.argsort(obj_values)
 
-    if use_dnc and benign_refs.get('subspace_samples'):
-        subspace_scores = []
+        # Boundary points get infinite distance
+        distances[sorted_idx[0]] = float('inf')
+        distances[sorted_idx[-1]] = float('inf')
 
-        for sample in benign_refs['subspace_samples']:
-            # 使用 centered 的子集
-            sub_centered = centered[:, sample['sampled_dims']]
+        obj_range = obj_values[sorted_idx[-1]] - obj_values[sorted_idx[0]]
+        if obj_range < 1e-9:
+            continue  # No diversity in this objective
 
-            # 投影到子空间主成分
-            raw_scores = torch.abs(sub_centered @ sample['principal_component'])
+        # Interior points: distance = (right - left) / range
+        for i in range(1, F - 1):
+            distances[sorted_idx[i]] += (
+                obj_values[sorted_idx[i + 1]] - obj_values[sorted_idx[i - 1]]
+            ) / obj_range
 
-            # 标准化
-            normalized_scores = raw_scores / (sample['benign_std'] + 1e-12)
-            subspace_scores.append(normalized_scores)
+    return distances
 
-        subspace_scores = torch.stack(subspace_scores, dim=0)  # (S, P)
 
-        # 子空间间聚合
-        if subspace_reduce == 'max':
-            losses['subspace'] = subspace_scores.max(dim=0)[0]
-        elif subspace_reduce == 'mean':
-            losses['subspace'] = subspace_scores.mean(dim=0)
+# ============================================================================
+# NSGA-II: Compute Rank and Crowding Distance
+# ============================================================================
+def compute_rank_and_crowding(objectives: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute Pareto rank and crowding distance for each individual
+
+    Args:
+        objectives: (M, N) objective matrix
+
+    Returns:
+        ranks: (N,) Pareto rank for each individual (0 = best front)
+        crowding: (N,) Crowding distance for each individual
+    """
+    M, N = objectives.shape
+    device = objectives.device
+
+    # Compute Pareto fronts
+    fronts = nondominated_sort(objectives)
+
+    # Initialize rank and crowding arrays
+    ranks = torch.full((N,), -1, dtype=torch.int32, device=device)
+    crowding = torch.zeros(N, device=device)
+
+    # Assign ranks and crowding distances
+    for rank_val, front in enumerate(fronts):
+        for idx in front:
+            ranks[idx] = rank_val
+
+        # Compute crowding distance for this front
+        front_crowding = crowding_distance(front, objectives)
+        for i, idx in enumerate(front):
+            crowding[idx] = front_crowding[i]
+
+    return ranks, crowding
+
+
+# ============================================================================
+# Binary Tournament Selection
+# ============================================================================
+def binary_tournament_selection(
+    objectives: torch.Tensor,
+    num_parents: int
+) -> List[int]:
+    """
+    Binary tournament selection based on Pareto rank and crowding distance
+
+    Args:
+        objectives: (M, N) objective matrix
+        num_parents: Number of parents to select
+
+    Returns:
+        parent_indices: List of selected parent indices
+    """
+    M, N = objectives.shape
+    device = objectives.device
+
+    # Compute rank and crowding distance
+    ranks, crowding = compute_rank_and_crowding(objectives)
+
+    parent_indices = []
+
+    for _ in range(num_parents):
+        # Randomly select two candidates
+        candidates = torch.randint(0, N, (2,), device=device)
+        idx1, idx2 = candidates[0].item(), candidates[1].item()
+
+        # Compare: better rank wins, tie-break by crowding distance
+        if ranks[idx1] < ranks[idx2]:
+            winner = idx1
+        elif ranks[idx1] > ranks[idx2]:
+            winner = idx2
         else:
-            losses['subspace'] = subspace_scores.max(dim=0)[0]
-    else:
-        losses['subspace'] = torch.zeros(P, device=device)
+            # Same rank: larger crowding distance wins
+            if crowding[idx1] >= crowding[idx2]:
+                winner = idx1
+            else:
+                winner = idx2
 
-    # ========================================================================
-    # 5. Cohesion 约束（原Group）：恶意种群内部凝聚度
-    # 修复 3/10：默认禁用 Cohesion 约束（仅在明确启用时计算）
-    # 注意：Cohesion 是种群相关的，不适合作为普通约束
-    # ========================================================================
-    enable_cohesion = getattr(benign_refs.get('args'), 'enable_cohesion_constraint', False)
+        parent_indices.append(winner)
 
-    if enable_cohesion:
-        # 警告：Cohesion is population-dependent and is an experimental metric.
-        malicious_mean = torch.mean(pop, dim=0)
-        losses['cohesion'] = torch.norm(pop - malicious_mean, dim=1)
-    else:
-        # 不要返回全零（会给虚假高分），直接不计算
-        losses['cohesion'] = torch.zeros(P, device=device)
-
-    # 保留 'group' 别名以兼容旧代码
-    losses['group'] = losses['cohesion']
-
-    return losses
+    return parent_indices
 
 
 # ============================================================================
-# 修复 6/12：重构约束得分映射函数，避免饱和
+# NSGA-II: Environmental Selection
 # ============================================================================
-
-def compute_constraint_score(loss_value, threshold, mode='smooth', temperature=0.5):
-    # 计算无量纲比值
-    ratio = loss_value / (threshold + 1e-12)
-
-    if mode == 'smooth':
-        # 平滑 sigmoid 映射
-        # ratio < 1: 高分; ratio = 1: 0.5; ratio > 1: 低分
-        return torch.sigmoid((1.0 - ratio) / temperature)
-
-    elif mode == 'relu':
-        # ReLU 反向映射
-        return torch.clamp(1.0 - ratio, min=0.0, max=1.0)
-
-    elif mode == 'linear':
-        # 分段线性映射
-        return torch.where(
-            ratio < 1.0,
-            torch.ones_like(ratio),
-            torch.where(
-                ratio < 2.0,
-                2.0 - ratio,
-                torch.zeros_like(ratio)
-            )
-        )
-    else:
-        # 回退到 smooth
-        return torch.sigmoid((1.0 - ratio) / temperature)
-
-
-def compute_constraint_violations(losses, thresholds):
-    violations = {}
-    ratios = {}
-
-    for name, loss in losses.items():
-        threshold = thresholds.get(name, 1.0)
-        ratio = loss / (threshold + 1e-12)
-        ratios[name] = ratio
-        violations[name] = torch.relu(ratio - 1.0)
-
-    return violations, ratios
-
-
-# ============================================================================
-# 原有的旧版 compute_constraint_score（保留以兼容，但已废弃）
-# ============================================================================
-
-
-@torch.no_grad()
-def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_cw=None, historical_pop=None, lam=0.5):
+def nsga2_select(
+    objectives: torch.Tensor,
+    pop_size: int
+) -> List[int]:
     """
-    MOS 攻击主函数（修复版：内存优化 + 约束修复）
+    NSGA-II environmental selection
+
+    Args:
+        objectives: (M, N) objective matrix
+        pop_size: Target population size
+
+    Returns:
+        selected_indices: Indices of selected individuals
+    """
+    fronts = nondominated_sort(objectives)
+
+    chosen = []
+    for front in fronts:
+        if len(chosen) + len(front) <= pop_size:
+            # Whole front fits
+            chosen.extend(front)
+        else:
+            # Last front: select by crowding distance
+            remaining_slots = pop_size - len(chosen)
+            distances = crowding_distance(front, objectives)
+
+            # Sort by distance (descending), pick most diverse
+            sorted_indices = torch.argsort(distances, descending=True)
+            selected = [front[i] for i in sorted_indices[:remaining_slots].tolist()]
+            chosen.extend(selected)
+            break
+
+    return chosen
+
+
+
+# ============================================================================
+# Genetic Operators: SBX Crossover
+# ============================================================================
+def sbx_crossover(
+    parent1: torch.Tensor,
+    parent2: torch.Tensor,
+    eta: float = 15.0,
+    crossover_prob: float = 0.9
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Simulated Binary Crossover (SBX)
+
+    Args:
+        parent1, parent2: Parent vectors
+        eta: Distribution index
+        crossover_prob: Per-dimension crossover probability
+
+    Returns:
+        child1, child2: Offspring vectors
+    """
+    D = parent1.shape[0]
+    device = parent1.device
+
+    u = torch.rand(D, device=device)
+    mask = torch.rand(D, device=device) <= crossover_prob
+
+    # Compute beta distribution
+    beta = torch.empty(D, device=device)
+    le = u <= 0.5
+    beta[le] = (2.0 * u[le]) ** (1.0 / (eta + 1.0))
+    beta[~le] = (1.0 / (2.0 * (1.0 - u[~le]))) ** (1.0 / (eta + 1.0))
+
+    # Generate children
+    child1 = 0.5 * ((1 + beta) * parent1 + (1 - beta) * parent2)
+    child2 = 0.5 * ((1 - beta) * parent1 + (1 + beta) * parent2)
+
+    # Apply crossover mask
+    child1[~mask] = parent1[~mask]
+    child2[~mask] = parent2[~mask]
+
+    return child1, child2
+
+
+# ============================================================================
+# Genetic Operators: Mutation
+# ============================================================================
+def mutation(
+    individual: torch.Tensor,
+    benign_std: torch.Tensor,
+    mutation_scale: float = 0.05
+) -> torch.Tensor:
+    """
+    Gaussian mutation scaled by benign standard deviation
+
+    Args:
+        individual: Individual to mutate
+        benign_std: Benign updates standard deviation
+        mutation_scale: Mutation strength
+
+    Returns:
+        mutated: Mutated individual
+    """
+    noise = torch.randn_like(individual) * benign_std * mutation_scale
+    return individual + noise
+
+
+
+# ============================================================================
+# Dual-Objective Computation
+# ============================================================================
+def compute_dual_objectives(
+    population: torch.Tensor,
+    benign_mean: torch.Tensor,
+    constraints: List[ConstraintPlugin],
+    attack_guidance: torch.Tensor,
+    context: Dict
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+    """
+    Compute dual objectives for NSGA-II
+
+    Objective 1: max R(x) - constraint pass score
+    Objective 2: max A(x) - destructiveness (alignment with guidance)
+
+    Returns:
+        objectives: (2, P) matrix in minimization form
+        constraint_pass_scores: (P,) total constraint scores
+        scores_dict: Per-constraint scores
+        total_cv: (P,) constraint violations (diagnostic only)
+    """
+    P = population.shape[0]
+    device = population.device
+
+    # Objective 1: Constraint pass score
+    constraint_pass_scores, scores_dict, losses_dict = compute_constraint_pass_score(
+        population, benign_mean, constraints, context
+    )
+
+    # Objective 2: Destructiveness (alignment with attack guidance)
+    centered = population - benign_mean
+    destructiveness = centered @ attack_guidance
+
+    # Compute CV for diagnostics (not an objective)
+    total_cv, ratios_dict = compute_cv(population, benign_mean, constraints, context)
+
+    # Convert to minimization form
+    obj1 = -constraint_pass_scores  # max R -> min -R
+    obj2 = -destructiveness          # max A -> min -A
+
+    objectives = torch.stack([obj1, obj2], dim=0)
+
+    return objectives, constraint_pass_scores, scores_dict, total_cv
+
+
+# ============================================================================
+# Final Solution Selection
+# ============================================================================
+def select_final_solution(
+    population: torch.Tensor,
+    objectives: torch.Tensor,
+    total_cv: Optional[torch.Tensor] = None,
+    constraint_scores: Optional[torch.Tensor] = None,
+    scores_dict: Optional[Dict[str, torch.Tensor]] = None,
+    lambda_s: float = 0.5,
+    lambda_a: float = 0.5,
+    attack_floor_ratio: float = 0.10,
+    args=None
+) -> Tuple[int, Dict]:
+    """
+    Select final solution from first Pareto front using balanced scoring
+
+    NO CV filtering - CV is only for diagnostics
+
+    Strategy:
+    1. Extract first Pareto front
+    2. Normalize both objectives within the front
+    3. Apply attack floor protection (optional)
+    4. Compute balanced score: λ_s * norm_stealth + λ_a * norm_destructiveness
+    5. Select highest balanced score
+
+    Args:
+        population: (P, D) population
+        objectives: (2, P) objectives in minimization form
+        total_cv: (P,) constraint violations (diagnostic only)
+        constraint_scores: (P,) constraint pass scores (diagnostic only)
+        scores_dict: Per-constraint scores (diagnostic only)
+        lambda_s: Weight for stealth objective
+        lambda_a: Weight for destructiveness objective
+        attack_floor_ratio: Minimum attack ratio threshold (0.0 to disable)
+        args: Configuration object
+
+    Returns:
+        best_idx: Index of selected solution in population
+        diagnostics: Dictionary with selection details
+    """
+    # Override with args if provided
+    if args is not None:
+        lambda_s = getattr(args, 'final_stealth_weight', lambda_s)
+        lambda_a = getattr(args, 'final_attack_weight', lambda_a)
+        attack_floor_ratio = getattr(args, 'final_attack_floor_ratio', attack_floor_ratio)
+
+    # Get first Pareto front
+    fronts = nondominated_sort(objectives)
+
+    if not fronts or not fronts[0]:
+        print("[MOS-Core] WARNING: Empty first Pareto front, selecting index 0")
+        return 0, {}
+
+    front_indices = fronts[0]
+
+    # Convert objectives back to maximization form
+    front_stealth = -objectives[0, front_indices]  # R(x)
+    front_destructiveness = -objectives[1, front_indices]  # A(x)
+
+    # Normalize stealth within front
+    stealth_min = front_stealth.min()
+    stealth_max = front_stealth.max()
+    if stealth_max - stealth_min > 1e-9:
+        norm_stealth = (front_stealth - stealth_min) / (stealth_max - stealth_min)
+    else:
+        # No variance: set to 0.5 (neutral)
+        norm_stealth = torch.full_like(front_stealth, 0.5)
+
+    # Normalize destructiveness within front
+    dest_min = front_destructiveness.min()
+    dest_max = front_destructiveness.max()
+    if dest_max - dest_min > 1e-9:
+        norm_destructiveness = (front_destructiveness - dest_min) / (dest_max - dest_min)
+    else:
+        # No variance: set to 0.5 (neutral)
+        norm_destructiveness = torch.full_like(front_destructiveness, 0.5)
+
+    # Attack floor protection (optional)
+    attack_floor = attack_floor_ratio * max(dest_max.item(), 0.0)
+    passes_floor = front_destructiveness >= attack_floor
+
+    if attack_floor_ratio > 0 and passes_floor.any():
+        # Filter to candidates passing attack floor
+        candidate_mask = passes_floor
+        candidate_indices = [front_indices[i] for i in range(len(front_indices)) if candidate_mask[i]]
+        candidate_norm_stealth = norm_stealth[candidate_mask]
+        candidate_norm_destruct = norm_destructiveness[candidate_mask]
+    else:
+        # Use full front
+        candidate_indices = front_indices
+        candidate_norm_stealth = norm_stealth
+        candidate_norm_destruct = norm_destructiveness
+
+    # Compute balanced score
+    balanced_scores = lambda_s * candidate_norm_stealth + lambda_a * candidate_norm_destruct
+
+    # Select best
+    best_idx_in_candidates = torch.argmax(balanced_scores).item()
+    best_idx = candidate_indices[best_idx_in_candidates]
+
+    # Prepare diagnostics
+    diagnostics = {
+        'pareto_front_size': len(front_indices),
+        'pareto_stealth_min': stealth_min.item(),
+        'pareto_stealth_max': stealth_max.item(),
+        'pareto_destructiveness_min': dest_min.item(),
+        'pareto_destructiveness_max': dest_max.item(),
+        'attack_floor': attack_floor,
+        'candidates_after_floor': len(candidate_indices),
+        'lambda_s': lambda_s,
+        'lambda_a': lambda_a,
+        'selected_idx': best_idx,
+    }
+
+    if total_cv is not None:
+        front_cv = total_cv[front_indices]
+        diagnostics['pareto_cv_min'] = front_cv.min().item()
+        diagnostics['pareto_cv_max'] = front_cv.max().item()
+
+    return best_idx, diagnostics
+
+
+
+# ============================================================================
+# Main Attack Entry Point
+# ============================================================================
+@torch.no_grad()
+def mos_attack(
+    all_updates: List[TensorDict],
+    args,
+    malicious_attackers_this_round: int,
+    g_ce: Optional[torch.Tensor] = None,
+    g_cw: Optional[torch.Tensor] = None,
+    historical_pop: Optional[torch.Tensor] = None,
+    lam: float = 0.5
+) -> Tuple[List[TensorDict], torch.Tensor]:
+    """
+    MOS-Attack: Multi-Objective Stealth Attack (Simplified Paper Version)
+
+    Args:
+        all_updates: List of client updates (first K are malicious slots)
+        args: Configuration object
+        malicious_attackers_this_round: Number of malicious clients (K)
+        g_ce: CE surrogate gradient (optional)
+        g_cw: CW surrogate gradient (optional)
+        historical_pop: Historical population for warm start (optional)
+        lam: CE/CW mixing ratio
+
+    Returns:
+        all_updates: Modified updates with malicious updates replaced
+        historical_perturbation: Best template perturbation for next round
     """
     if malicious_attackers_this_round == 0:
         return all_updates
 
-    device = args.device if hasattr(args, 'device') else 'cpu'
     K = malicious_attackers_this_round
+    device = args.device if hasattr(args, 'device') else 'cpu'
 
-    # 显存调试开关
-    mos_memory_debug = getattr(args, 'mos_memory_debug', False)
+    print(f"\n{'='*60}")
+    print(f"[MOS-Core] Starting MOS-Attack")
+    print(f"{'='*60}")
 
-    if mos_memory_debug and torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-        log_cuda_memory("attack entry", enabled=True)
-
-    # ================= 核心修改：固定进化种群大小 =================
-    EVOLUTION_POP_SIZE = getattr(args, 'evo_pop_size', 10)
-    print(f"[MOS LOG] 🧬 进化模式：固定种群大小 = {EVOLUTION_POP_SIZE}，目标恶意客户端数 K = {K}")
-    # ============================================================
-
-    # --- 1. 数据准备与层维度记录 ---
+    # ========================================================================
+    # Step 1: Flatten updates and record layer dimensions
+    # ========================================================================
     layer_dims = []
     idx_current = 0
-
-    # 获取输出层的 key
-    keys = list(all_updates[0].keys())
-    out_weight_key = keys[-2]
-    out_bias_key = keys[-1]
 
     for k, v in all_updates[0].items():
         num_params = v.numel()
         layer_dims.append((k, idx_current, idx_current + num_params))
         idx_current += num_params
 
-    # 修复 12/10：只展平良性客户端更新
-    benign_updates = all_updates[malicious_attackers_this_round:]
     total_params = idx_current
+    print(f"[MOS-Core] Total parameters: {total_params:,}")
 
-    if len(benign_updates) == 0:
-        # 没有良性客户端，使用安全回退
-        print(f"[MOS WARNING] 没有良性客户端，返回加噪原始更新")
-        noisy = torch.randn(K, total_params, device=device) * 1e-6
+    # Extract benign updates
+    benign_updates = all_updates[malicious_attackers_this_round:]
+    benign_count = len(benign_updates)
+
+    if benign_count == 0:
+        print(f"[MOS-Core] WARNING: No benign clients, returning noisy original")
         for i in range(K):
             original_vec = torch.cat([torch.flatten(all_updates[i][k]) for k in all_updates[i].keys()])
-            all_updates[i] = vector_to_net_dict(
-                original_vec.to(device) + noisy[i],
-                copy.deepcopy(all_updates[i])
-            )
+            noise = torch.randn_like(original_vec) * 1e-6
+            all_updates[i] = vector_to_net_dict(original_vec + noise, copy.deepcopy(all_updates[i]))
         return all_updates
 
-    # 预分配良性梯度矩阵
+    print(f"[MOS-Core] Benign clients: {benign_count}")
+    print(f"[MOS-Core] Malicious slots: {K}")
+
+
+    # Flatten benign updates
     benign_grads = torch.empty(
-        (len(benign_updates), total_params),
+        (benign_count, total_params),
         device=device,
-        dtype=next(iter(benign_updates[0].values())).dtype,
+        dtype=next(iter(benign_updates[0].values())).dtype
     )
 
-    # 逐个复制
     for row, update in enumerate(benign_updates):
         offset = 0
         for k in update.keys():
@@ -453,1229 +882,490 @@ def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_c
             benign_grads[row, offset:end].copy_(flat)
             offset = end
 
-    log_cuda_memory("after benign stack", mos_memory_debug)
-
-    # 计算良性统计
+    # ========================================================================
+    # Step 2: Compute benign statistics
+    # ========================================================================
     benign_mean = torch.mean(benign_grads, dim=0)
-
-    # 修复 10/10：使用 correction=0 避免单个良性客户端时的 NaN
     benign_std = torch.std(benign_grads, dim=0, correction=0) + 1e-9
 
     b_mean_norm = torch.norm(benign_mean).item()
     b_std_mean = torch.mean(benign_std).item()
-    b_std_max = torch.max(benign_std).item()
 
-    print(f"[MOS LOG] 📊 良性梯度统计:")
-    print(f"[MOS LOG]   良性均值范数 (Benign Mean Norm): {b_mean_norm:.4f}")
-    print(f"[MOS LOG]   良性标准差 (Benign STD): mean={b_std_mean:.4f}, max={b_std_max:.4f}")
+    print(f"[MOS-Core] Benign mean norm: {b_mean_norm:.4f}")
+    print(f"[MOS-Core] Benign std (mean): {b_std_mean:.4f}")
 
-    # 检查数值异常
+    # Check for numerical issues
     if not torch.isfinite(benign_mean).all():
-        print(f"[MOS ERROR] ⚠️⚠️⚠️ 良性均值包含 NaN 或 Inf，数据异常！")
-    if not torch.isfinite(benign_std).all():
-        print(f"[MOS ERROR] ⚠️⚠️⚠️ 良性标准差包含 NaN 或 Inf，数据异常！")
+        print(f"[MOS-Core] ERROR: Benign mean contains NaN/Inf")
+        return all_updates
 
-    dists_benign = torch.norm(benign_grads - benign_mean, dim=1)
-    benign_min, _ = torch.min(benign_grads, dim=0)
-    benign_max, _ = torch.max(benign_grads, dim=0)
-    lower_bound = benign_min
-    upper_bound = benign_max
-
-    # ================= 修改 2：DNC-aware 掩码（仅在 DNC 开启时使用）=================
-    def compute_dnc_sensitive_mask(benign_grads, benign_mean, device, num_samples=5):
-        """计算 DNC 敏感的维度掩码，找出在多次随机采样中都被第一主成分覆盖的维度"""
-        num_params = benign_mean.numel()
-        sensitivity_scores = torch.zeros(num_params, device=device)
-
-        for _ in range(num_samples):
-            # 修复 14/10：使用 random.sample 避免大 randperm
-            sample_size = min(1000, num_params)
-            sampled_indices = torch.tensor(
-                random.sample(range(num_params), sample_size),
-                device=device,
-                dtype=torch.long,
-            )
-
-            benign_sub = benign_grads[:, sampled_indices]
-            benign_sub_centered = benign_sub - benign_sub.mean(dim=0)
-
-            try:
-                U, S, V = torch.linalg.svd(benign_sub_centered, full_matrices=False)
-                principal_component = V[0, :]
-                weights = principal_component.abs()
-                sensitivity_scores[sampled_indices] += weights
-            except:
-                continue
-
-        sensitivity_scores = sensitivity_scores / (num_samples + 1e-12)
-
-        # 创建掩码：保留敏感度最低的 50% 维度
-        k_dim = int(0.5 * num_params)
-        _, low_sensitivity_indices = torch.topk(sensitivity_scores, k_dim, largest=False)
-
-        dnc_stealth_mask = torch.zeros_like(benign_mean)
-        dnc_stealth_mask[low_sensitivity_indices] = 1.0
-
-        return dnc_stealth_mask, sensitivity_scores
-
-    # 检查是否启用 DNC 防御
-    defend_methods = getattr(args, 'defend_methods', [])
-    use_dnc = 'dnc' in defend_methods
-
-    if use_dnc and getattr(args, 'use_dnc_aware_mask', False):
-        # 使用 DNC-aware 掩码（针对性强）
-        survival_mask, sensitivity_scores = compute_dnc_sensitive_mask(
-            benign_grads, benign_mean, device, num_samples=5
-        )
-        active_ratio = survival_mask.sum().item() / survival_mask.numel()
-        print(f"[MOS LOG] ✓ DNC-aware mask enabled: True")
-        print(f"[MOS LOG]   Survival mask active ratio: {active_ratio:.2%}")
-        print(f"[MOS LOG]   Sensitive dimension ratio: {(sensitivity_scores > sensitivity_scores.median()).float().mean():.2%}")
-    else:
-        # 回退到全 1 掩码（不做限制，适用于其他防御）
-        survival_mask = torch.ones_like(benign_mean)
-        sensitivity_scores = None
-        print(f"[MOS LOG] ✓ DNC-aware mask enabled: False")
-        if use_dnc:
-            print(f"[MOS LOG]   (DNC detected but mask disabled)")
-
-    # 修复 3/10：计算攻击预算（使用稳健的分位数方法）
-    radius_quantile = getattr(args, 'radius_quantile', 0.95)
-    smoothed_radial_threshold = torch.quantile(dists_benign, q=radius_quantile)
-
-    attack_budget_ratio = getattr(args, 'attack_budget_ratio', 1.0)
-    max_dev_threshold = attack_budget_ratio * smoothed_radial_threshold
-
-    print(f"[MOS LOG] 📐 Attack budget configuration:")
-    print(f"[MOS LOG]   Base radial threshold (q={radius_quantile}): {smoothed_radial_threshold:.4f}")
-    print(f"[MOS LOG]   Attack budget ratio: {attack_budget_ratio}")
-    print(f"[MOS LOG]   Max deviation threshold: {max_dev_threshold:.4f}")
-
-    # 修复 8/10：统一所有攻击尺度到新预算
-    elite_ce_ratio = getattr(args, 'elite_ce_ratio', 0.8)
-    elite_cw_ratio = getattr(args, 'elite_cw_ratio', 0.8)
-    elite_combined_ratio = getattr(args, 'elite_combined_ratio', 0.95)
-    history_max_ratio = getattr(args, 'history_max_ratio', 1.0)
-    safe_fallback_ratio = getattr(args, 'safe_fallback_ratio', 0.1)
-
-    has_valid_guidance = (g_ce is not None and g_cw is not None and
-                          not torch.isnan(g_ce).any() and not torch.isinf(g_ce).any() and
-                          not torch.isnan(g_cw).any() and not torch.isinf(g_cw).any())
+    # ========================================================================
+    # Step 3: Construct attack guidance
+    # ========================================================================
+    has_valid_guidance = (
+        g_ce is not None and g_cw is not None and
+        not torch.isnan(g_ce).any() and not torch.isinf(g_ce).any() and
+        not torch.isnan(g_cw).any() and not torch.isinf(g_cw).any()
+    )
 
     if has_valid_guidance:
-        # 修复 8/10：使用新预算计算精英目标
         g_ce_unit = g_ce.to(device) / (torch.norm(g_ce.to(device)) + 1e-9)
         g_cw_unit = g_cw.to(device) / (torch.norm(g_cw.to(device)) + 1e-9)
 
-        lam = float(lam)
+        # Combined guidance
         g_combined = lam * g_ce_unit + (1.0 - lam) * g_cw_unit
-        g_combined_unit = g_combined / (torch.norm(g_combined) + 1e-9)
+        g_attack = g_combined / (torch.norm(g_combined) + 1e-9)
 
-        target_ce = benign_mean + elite_ce_ratio * max_dev_threshold * g_ce_unit
-        target_cw = benign_mean + elite_cw_ratio * max_dev_threshold * g_cw_unit
+        print(f"[MOS-Core] Using CE+CW guidance (lambda={lam})")
+        print(f"[MOS-Core] CE-CW cosine similarity: {torch.dot(g_ce_unit, g_cw_unit).item():.4f}")
     else:
-        # 安全回退策略：检测异常并输出诊断信息
-        warnings = []
-        if g_ce is None: warnings.append("g_ce为空")
-        if g_cw is None: warnings.append("g_cw为空")
-        if g_ce is not None and torch.isnan(g_ce).any(): warnings.append("g_ce为nan")
-        if g_cw is not None and torch.isnan(g_cw).any(): warnings.append("g_cw为nan")
-        if g_ce is not None and torch.isinf(g_ce).any(): warnings.append("g_ce为inf")
-        if g_cw is not None and torch.isinf(g_cw).any(): warnings.append("g_cw为inf")
+        # Safe fallback: use benign mean direction
+        print(f"[MOS-Core] WARNING: Invalid guidance, using benign mean direction")
+        g_attack = benign_mean / (torch.norm(benign_mean) + 1e-9)
 
-        print(f"[MOS WARNING] ⚠️ 检测到代理梯度异常，启动安全回退策略！({', '.join(warnings)})")
+    g_attack = g_attack.detach()
+    print(f"[MOS-Core] Attack guidance norm: {torch.norm(g_attack).item():.6f}")
 
-        # 修复 9/10：使用 state_dict 计算正确长度
-        safe_spark = safe_fallback_ratio * max_dev_threshold
-        benign_dir = benign_mean / (torch.norm(benign_mean) + 1e-9)
 
-        g_ce_unit = benign_dir
-        g_cw_unit = benign_dir
-        g_combined_unit = benign_dir
+    # ========================================================================
+    # Step 4: Compute attack budget
+    # ========================================================================
+    dists_benign = torch.norm(benign_grads - benign_mean, dim=1)
+    radius_quantile = getattr(args, 'radius_quantile', 0.95)
+    base_threshold = torch.quantile(dists_benign, q=radius_quantile)
 
-        target_ce = benign_mean + safe_spark * benign_dir
-        target_cw = benign_mean + safe_spark * benign_dir
+    attack_budget_ratio = getattr(args, 'attack_budget_ratio', 1.0)
+    max_dev_threshold = attack_budget_ratio * base_threshold
 
-    target_ce = target_ce.detach()
-    target_cw = target_cw.detach()
+    print(f"[MOS-Core] Base radial threshold (q={radius_quantile}): {base_threshold:.4f}")
+    print(f"[MOS-Core] Attack budget ratio: {attack_budget_ratio}")
+    print(f"[MOS-Core] Max deviation threshold: {max_dev_threshold:.4f}")
 
-    # ============================================================================
-    # 预计算良性参考系统（循环外抽离，避免每代重复计算）
-    # ============================================================================
+    # ========================================================================
+    # Step 5: Initialize constraints
+    # ========================================================================
+    print(f"\n[MOS-Core] Initializing constraints...")
 
-    print(f"\n[MOS LOG] 🔧 开始预计算良性参考系统...")
-
-    # 1. PCA主成分预计算（用于后续约束评分）
-    pca_principal_dirs = None
-    pca_benign_proj_std = None
-
-    if use_dnc:
-        try:
-            benign_centered = benign_grads - benign_mean
-            U, S, V = torch.linalg.svd(benign_centered, full_matrices=False)
-            num_principal_components = min(5, V.shape[0])
-
-            # 修复 13/10：clone 后释放完整 V
-            pca_principal_dirs = V[:num_principal_components].clone().detach()
-
-            # 计算良性梯度在主成分上的投影标准差（用于归一化）
-            benign_projections = torch.matmul(benign_centered, pca_principal_dirs.T)
-            pca_benign_proj_std = benign_projections.std(dim=0, correction=0) + 1e-9
-
-            print(f"[MOS LOG]   ✓ PCA主成分提取完成，保留前{num_principal_components}个主成分")
-
-            # 释放临时变量
-            del U
-            del S
-            del V
-            del benign_centered
-            del benign_projections
-
-        except Exception as e:
-            print(f"[MOS WARNING]   ✗ PCA预计算失败: {e}，将跳过PCA约束")
-            pca_principal_dirs = None
-
-    log_cuda_memory("after PCA", mos_memory_debug)
-
-    # 2. 子空间采样预计算（用于DNC子空间鲁棒性约束）
-    subspace_samples = []
-    enable_subspace = use_dnc and getattr(args, 'enable_subspace_constraint', True)
-
-    if enable_subspace:
-        num_subspace_samples = 3
-
-        # 修复 9/10: 支持固定种子的子空间采样
-        use_fixed_seed = getattr(args, 'subspace_fixed_seed', False)
-        rng = random.Random(42) if use_fixed_seed else random.Random()
-
-        if use_fixed_seed:
-            print(f"[MOS LOG]   ✓ 使用固定种子(42)进行子空间采样（可复现）")
-
-        for sample_idx in range(num_subspace_samples):
-            try:
-                # 修复 14/10：使用 random.sample 避免大 randperm
-                D = benign_mean.numel()
-                sample_size = min(1000, D)
-                sampled_dims = torch.tensor(
-                    rng.sample(range(D), sample_size),
-                    device=device,
-                    dtype=torch.long,
-                )
-
-                benign_sub = benign_grads[:, sampled_dims]
-                benign_sub_mean = benign_sub.mean(dim=0)
-                benign_sub_centered = benign_sub - benign_sub_mean
-
-                _, _, V_sub = torch.linalg.svd(benign_sub_centered, full_matrices=False)
-                v_sub = V_sub[0, :].clone().detach()
-
-                # 计算良性梯度在该子空间主成分上的投影标准差
-                benign_sub_scores = torch.abs((benign_sub_centered @ v_sub))
-                benign_sub_std = benign_sub_scores.std(correction=0) + 1e-9
-
-                subspace_samples.append({
-                    'sampled_dims': sampled_dims,
-                    'principal_component': v_sub,
-                    'sub_mean': benign_sub_mean,
-                    'benign_std': benign_sub_std
-                })
-
-                # 释放临时变量
-                del benign_sub
-                del benign_sub_centered
-                del V_sub
-
-            except Exception as e:
-                print(f"[MOS WARNING]   ✗ 子空间样本{sample_idx}预计算失败: {e}")
-                continue
-
-        if subspace_samples:
-            print(f"[MOS LOG]   ✓ 子空间采样完成，成功预计算{len(subspace_samples)}个子空间")
-        else:
-            enable_subspace = False
-
-    log_cuda_memory("after subspace", mos_memory_debug)
-
-    # 3. 计算良性梯度的约束loss阈值（打分系统的"及格线"）
-    # 修复 7/12：使用统一的 compute_raw_constraint_losses 函数
-    print(f"[MOS LOG]   🎯 计算良性梯度约束loss阈值...")
-
-    # 获取超参数
-    constraint_quantile = getattr(args, 'constraint_quantile', 0.95)
-
-    # 构建临时 benign_refs（用于计算良性更新的约束 loss）
-    temp_benign_refs = {
-        'mean': benign_mean,
-        'std': benign_std,
-        'grads': benign_grads,
-        'layer_dims': layer_dims,
-        'pca_principal_dirs': pca_principal_dirs,
-        'pca_benign_proj_std': pca_benign_proj_std,
-        'subspace_samples': subspace_samples,
-        'use_dnc': use_dnc,
-        'device': device,
-        'args': args,
-    }
-
-    # 使用统一函数计算良性更新的约束 loss
-    with torch.no_grad():
-        benign_losses = compute_raw_constraint_losses(benign_grads, temp_benign_refs)
-
-        # 计算每个约束的阈值（使用分位数或稳健统计量）
-        constraint_thresholds = {}
-
-        # 修复 4/10：跳过未启用的约束
-        active_constraints = ['radial', 'sign']
-        if use_dnc:
-            active_constraints.append('pca')
-            if enable_subspace:
-                active_constraints.append('subspace')
-
-        enable_cohesion = getattr(args, 'enable_cohesion_constraint', False)
-        if enable_cohesion:
-            active_constraints.append('cohesion')
-
-        for name, loss_tensor in benign_losses.items():
-            if name in ['krum', 'group']:  # 别名，跳过
-                continue
-
-            # 跳过未启用的约束
-            if name not in active_constraints:
-                constraint_thresholds[name] = 0.0  # 设置为0，表示未启用
-                continue
-
-            # 检查样本数量
-            if loss_tensor.numel() < 2:
-                # 样本太少，使用保守阈值
-                constraint_thresholds[name] = loss_tensor.max() * 1.5 + 0.1
-                print(f"[MOS WARNING]   约束 {name}: 样本不足，使用保守阈值")
-                continue
-
-            # 使用分位数方法
-            try:
-                threshold = torch.quantile(loss_tensor, q=constraint_quantile)
-            except:
-                # 回退到稳健统计量: median + k * MAD
-                median = torch.median(loss_tensor)
-                mad = torch.median(torch.abs(loss_tensor - median))
-                threshold = median + 2.0 * 1.4826 * mad
-
-            constraint_thresholds[name] = threshold.item() + 1e-6  # 加小偏置避免数值问题
-
-        # 添加别名以兼容旧代码
-        constraint_thresholds['krum'] = constraint_thresholds.get('radial', 1.0)
-        constraint_thresholds['group'] = constraint_thresholds.get('cohesion', 0.0)
-
-    # 打印阈值信息和配置
-    print(f"[MOS LOG]   📊 约束阈值（分位数 q={constraint_quantile}）:")
-    print(f"[MOS LOG]      - Radial: {constraint_thresholds['radial']:.4f}")
-    print(f"[MOS LOG]      - Sign: {constraint_thresholds['sign']:.4f}")
-    if use_dnc and pca_principal_dirs is not None:
-        print(f"[MOS LOG]      - PCA: {constraint_thresholds['pca']:.4f}")
-    if enable_subspace:
-        print(f"[MOS LOG]      - Subspace: {constraint_thresholds['subspace']:.4f}")
-    if enable_cohesion:
-        print(f"[MOS LOG]      - Cohesion: {constraint_thresholds['cohesion']:.4f} (experimental)")
-
-    # 修复 1/10：打印配置信息
+    radial_weight = getattr(args, 'weight_radial', 1.0)
+    sign_weight = getattr(args, 'weight_sign', 0.5)
     sign_layer_reduce = getattr(args, 'sign_layer_reduce', 'quantile')
-    subspace_reduce = getattr(args, 'subspace_reduce', 'max')
-    constraint_score_temperature = getattr(args, 'constraint_score_temperature', 0.5)
+    sign_layer_quantile = getattr(args, 'sign_layer_quantile', 0.9)
 
-    print(f"\n[MOS LOG] 🔧 Constraint configuration:")
-    print(f"[MOS LOG]   Sign layer reduce: {sign_layer_reduce}")
-    print(f"[MOS LOG]   Subspace reduce: {subspace_reduce}")
-    print(f"[MOS LOG]   Constraint score temperature: {constraint_score_temperature}")
-
-    print(f"[MOS LOG]   Active constraints: {', '.join(active_constraints)}")
-    disabled = [name for name in ['radial', 'sign', 'pca', 'subspace', 'cohesion'] if name not in active_constraints]
-    if disabled:
-        print(f"[MOS LOG]   Disabled constraints: {', '.join(disabled)}")
-
-    # 4. 打包良性参考数据（传递给compute_objectives）
-    benign_refs = {
-        'mean': benign_mean,
-        'std': benign_std,
-        'grads': benign_grads,
-        'lower_bound': lower_bound,
-        'upper_bound': upper_bound,
-        'survival_mask': survival_mask,
-        'layer_dims': layer_dims,
-        'pca_principal_dirs': pca_principal_dirs,
-        'pca_benign_proj_std': pca_benign_proj_std,
-        'subspace_samples': subspace_samples,
-        'use_dnc': use_dnc,
-        'device': device,
-        'args': args,  # 修复 1/10：添加 args 字段
-    }
-
-    print(f"[MOS LOG] ✅ 良性参考系统预计算完成！\n")
-    log_cuda_memory("after benign references", mos_memory_debug)
-    target_ce = target_ce.detach()
-    target_cw = target_cw.detach()
-
-    # ========================================================================
-    # 构造约束安全的 guidance (在 benign_refs 定义之后)
-    # ========================================================================
-    if has_valid_guidance:
-        print(f"[MOS LOG] 🛡️ 构造约束安全的 guidance...")
-
-        # 步骤1: 削弱与良性均值符号相反的维度
-        sign_safe_weight = getattr(args, 'sign_safe_weight', 0.1)
-
-        same_sign = (g_combined_unit * torch.sign(benign_mean) >= 0).float()
-        g_safe = g_combined_unit * (sign_safe_weight + (1.0 - sign_safe_weight) * same_sign)
-
-        # 步骤2: 移除部分随机子空间主成分投影
-        subspace_repair_strength = getattr(args, 'subspace_repair_strength', 0.5)
-
-        if use_dnc and subspace_samples:
-            for sample in subspace_samples:
-                dims = sample['sampled_dims']
-                v = sample['principal_component']
-
-                coeff = torch.dot(g_safe[dims], v)
-                g_safe[dims] -= subspace_repair_strength * coeff * v
-
-        # 步骤3: 重新归一化
-        g_safe = g_safe / (torch.norm(g_safe) + 1e-12)
-
-        print(f"[MOS LOG]   ✓ Sign safe weight: {sign_safe_weight}")
-        print(f"[MOS LOG]   ✓ Subspace repair strength: {subspace_repair_strength}")
-        print(f"[MOS LOG]   ✓ g_safe norm: {torch.norm(g_safe).item():.6f}")
-
-        g_safe = g_safe.detach()
-    else:
-        # 安全回退：使用 benign_dir
-        g_safe = benign_mean / (torch.norm(benign_mean) + 1e-9)
-        g_safe = g_safe.detach()
-
-    # 初始化或恢复历史种群
-    if historical_pop is not None:
-        historical_pop = historical_pop.to(device)
-        hist_P = historical_pop.shape[0]
-
-        # 适配到固定种群大小
-        if hist_P == EVOLUTION_POP_SIZE:
-            evolution_pop = historical_pop
-        elif hist_P > EVOLUTION_POP_SIZE:
-            evolution_pop = historical_pop[:EVOLUTION_POP_SIZE]
-        else:
-            indices = torch.randint(0, hist_P, (EVOLUTION_POP_SIZE - hist_P,), device=device)
-            extra_pop = historical_pop[indices]
-            evolution_pop = torch.cat([historical_pop, extra_pop], dim=0)
-
-        # 修复 8/10：使用新预算和投影函数
-        max_allowed_hist = history_max_ratio * max_dev_threshold
-        evolution_pop, _, _ = project_to_attack_budget(
-            evolution_pop,
-            benign_mean,
-            max_allowed_hist
+    constraints = [
+        RadialConstraint(weight=radial_weight, quantile=radius_quantile),
+        SignConstraint(
+            weight=sign_weight,
+            quantile=radius_quantile,
+            layer_reduce=sign_layer_reduce,
+            layer_quantile=sign_layer_quantile
         )
+    ]
 
-        # 衰减系数
-        decay_factor = 0.95
-        evolution_pop = benign_mean + (evolution_pop - benign_mean) * decay_factor + \
-                        torch.randn(EVOLUTION_POP_SIZE, benign_mean.shape[0], device=device) * (0.01 * benign_std)
+    print(f"[MOS-Core] Enabled constraints: Radial, Sign")
+    print(f"[MOS-Core] Radial weight: {radial_weight}")
+    print(f"[MOS-Core] Sign weight: {sign_weight}, layer_reduce: {sign_layer_reduce}")
+
+    # Fit constraints on benign updates
+    context = {'layer_dims': layer_dims}
+
+    for constraint in constraints:
+        constraint.fit(benign_grads, benign_mean, context)
+        print(f"[MOS-Core]   {constraint.name.capitalize()} threshold: {constraint.threshold:.4f}")
+
+    # ========================================================================
+    # Step 6: Initialize population with multi-scale attack directions
+    # ========================================================================
+    pop_size = getattr(args, 'evo_pop_size', 10)
+    print(f"\n[MOS-Core] Initializing population (size={pop_size})...")
+
+    # Multi-scale initialization
+    default_scales = [0.0, 0.10, 0.25, 0.50, 0.75, 0.95]
+
+    # Select scales based on pop_size
+    if pop_size <= len(default_scales):
+        # Use evenly spaced scales, always keeping 0.0 and 0.95
+        if pop_size == 1:
+            selected_scales = [0.95]
+        elif pop_size == 2:
+            selected_scales = [0.0, 0.95]
+        elif pop_size == 3:
+            selected_scales = [0.0, 0.5, 0.95]
+        else:
+            # Uniformly sample from default scales
+            indices = torch.linspace(0, len(default_scales) - 1, pop_size).long()
+            selected_scales = [default_scales[i] for i in indices]
     else:
-        # 第一轮：初始化固定大小的进化种群
-        evolution_pop = benign_mean.clone().detach().repeat(EVOLUTION_POP_SIZE, 1) + \
-                        torch.randn(EVOLUTION_POP_SIZE, benign_mean.shape[0], device=device) * (0.01 * benign_std)
+        selected_scales = default_scales.copy()
 
-    # 【精英种子注入】：将前几个个体替换为沿指导方向的精英
-    if has_valid_guidance:
-        if EVOLUTION_POP_SIZE >= 1:
-            evolution_pop[0] = target_ce  # 极致的 CE 破坏者
-        if EVOLUTION_POP_SIZE >= 2:
-            evolution_pop[1] = target_cw  # 极致的 CW 破坏者
-        if EVOLUTION_POP_SIZE >= 3:
-            # 沿着混合方向的破坏者
-            evolution_pop[2] = benign_mean + elite_combined_ratio * max_dev_threshold * g_combined_unit
-        if EVOLUTION_POP_SIZE >= 4:
-            # g_safe 精英作为主要引导种子
-            evolution_pop[3] = benign_mean + elite_combined_ratio * max_dev_threshold * g_safe
+    num_scale_seeds = len(selected_scales)
+    population = torch.empty(pop_size, total_params, device=device)
 
-    # 修复 6/10：初始种群投影到预算内
-    evolution_pop, init_clipped, init_norms = project_to_attack_budget(
-        evolution_pop,
-        benign_mean,
-        max_dev_threshold
+    # Generate scale-based seeds
+    for i, scale in enumerate(selected_scales):
+        population[i] = benign_mean + scale * max_dev_threshold * g_attack
+
+    print(f"[MOS-Core] Generated {num_scale_seeds} scale-based seeds: {selected_scales}")
+
+    # Historical seed injection
+    historical_used = False
+    if historical_pop is not None and num_scale_seeds < pop_size:
+        try:
+            # historical_pop is expected to be a perturbation relative to benign mean
+            hist_pert = historical_pop.squeeze() if historical_pop.dim() > 1 else historical_pop
+
+            if hist_pert.shape[0] == total_params and torch.isfinite(hist_pert).all():
+                # Construct historical candidate
+                hist_candidate = benign_mean + hist_pert
+
+                # Project to current budget
+                hist_candidate_proj, _, hist_norm_pre = project_to_attack_budget(
+                    hist_candidate.unsqueeze(0), benign_mean, max_dev_threshold
+                )
+                hist_candidate_proj = hist_candidate_proj.squeeze(0)
+                hist_norm_post = torch.norm(hist_candidate_proj - benign_mean).item()
+
+                # Replace a mid-scale seed (e.g., 0.25 or 0.5 position)
+                if 0.25 in selected_scales:
+                    replace_idx = selected_scales.index(0.25)
+                elif 0.5 in selected_scales:
+                    replace_idx = selected_scales.index(0.5)
+                else:
+                    replace_idx = min(1, num_scale_seeds - 1)  # Avoid replacing 0.0 or 0.95
+
+                population[replace_idx] = hist_candidate_proj
+                historical_used = True
+
+                print(f"[MOS-Core] Historical seed injected at position {replace_idx}")
+                print(f"[MOS-Core]   Original norm: {hist_norm_pre.item():.4f}")
+                print(f"[MOS-Core]   Projected norm: {hist_norm_post:.4f}")
+            else:
+                print(f"[MOS-Core] WARNING: Historical seed dimension mismatch or contains NaN/Inf, ignoring")
+        except Exception as e:
+            print(f"[MOS-Core] WARNING: Failed to use historical seed: {e}")
+
+    # Fill remaining slots with random candidates
+    random_noise_scale = 0.1
+    for i in range(num_scale_seeds, pop_size):
+        alpha = torch.rand(1, device=device).item() * 0.95  # Random scale in [0, 0.95]
+        candidate = (
+            benign_mean +
+            alpha * max_dev_threshold * g_attack +
+            random_noise_scale * benign_std * torch.randn_like(benign_mean)
+        )
+        population[i] = candidate
+
+    if pop_size > num_scale_seeds:
+        print(f"[MOS-Core] Generated {pop_size - num_scale_seeds} random candidates "
+              f"(noise_scale={random_noise_scale})")
+
+    # Project entire population to budget
+    population, init_clipped, init_norms = project_to_attack_budget(
+        population, benign_mean, max_dev_threshold
     )
 
-    init_clipped_ratio = init_clipped.float().mean().item()
-    print(f"[MOS LOG] 📊 Initial population:")
-    print(f"[MOS LOG]   Pre-projection norm: min={init_norms.min():.4f}, "
-          f"mean={init_norms.mean():.4f}, max={init_norms.max():.4f}")
-    print(f"[MOS LOG]   Clipped ratio: {init_clipped_ratio:.2%}")
+    budget_ratios = init_norms / max_dev_threshold
+    print(f"[MOS-Core] Initial population norms: "
+          f"min={init_norms.min():.4f}, mean={init_norms.mean():.4f}, max={init_norms.max():.4f}")
+    print(f"[MOS-Core] Budget ratios: "
+          f"min={budget_ratios.min():.4f}, mean={budget_ratios.mean():.4f}, max={budget_ratios.max():.4f}")
+    print(f"[MOS-Core] Clipped ratio: {init_clipped.float().mean():.2%}")
+    print(f"[MOS-Core] Historical seed used: {historical_used}")
 
-    # 用于进化的种群（固定大小）
-    malicious_set = evolution_pop
 
-    log_cuda_memory("after population initialization", mos_memory_debug)
-
-    log_cuda_memory("after population initialization", mos_memory_debug)
-
+    # ========================================================================
+    # Step 7: NSGA-II Evolution
+    # ========================================================================
     generations = getattr(args, 'nsga_generations', 100)
-
-    # 变异模式和尺度参数
-    mutation_mode = getattr(args, 'mos_mutation_mode', 'benign_std')
+    eta = float(getattr(args, 'sbx_eta', 15.0))
+    crossover_prob = getattr(args, 'sbx_crossover_prob', 0.9)
     mutation_scale = getattr(args, 'mos_mutation_scale', 0.05)
-    mutation_radius_ratio = getattr(args, 'mos_mutation_radius_ratio', 0.01)
-    dir_step_ratio = getattr(args, 'mos_dir_step_ratio', 0.02)
 
-    print(f"[MOS LOG] 🔧 Mutation configuration:")
-    print(f"[MOS LOG]   Mode: {mutation_mode}")
-    if mutation_mode == 'benign_std':
-        print(f"[MOS LOG]   Scale: {mutation_scale} * benign_std")
-    elif mutation_mode == 'unit_norm':
-        print(f"[MOS LOG]   Radius ratio: {mutation_radius_ratio}")
-    print(f"[MOS LOG]   Directional step ratio: {dir_step_ratio}")
+    print(f"\n[MOS-Core] Starting NSGA-II evolution...")
+    print(f"[MOS-Core] Generations: {generations}")
+    print(f"[MOS-Core] Population size: {pop_size}")
+    print(f"[MOS-Core] SBX eta: {eta}, crossover_prob: {crossover_prob}")
+    print(f"[MOS-Core] Mutation scale: {mutation_scale}")
 
-    # 预先记录日志探针变量
-    mutation_norms_log = []
-    directional_push_norms_log = []
-
-    # 引入 archive 作为跨代记忆（使用固定种群大小）
-    archive = malicious_set.clone().detach()
-    archive_size = EVOLUTION_POP_SIZE
-
-    # 获取打分系统配置
-    # 修复 2/10：统一命名为 'smooth'，兼容旧配置
-    score_mode = getattr(args, "score_mode", "smooth")
-    if score_mode == "sigmoid":
-        score_mode = "smooth"  # 兼容旧配置
-
-    constraint_epsilon = getattr(args, 'constraint_epsilon', 0.0)
-
-    print(f"\n[MOS LOG] 🧬 开始进化循环，代数={generations}，种群大小={EVOLUTION_POP_SIZE}")
-    print(f"[MOS LOG] 📊 打分系统：{score_mode} 映射")
-    print(f"[MOS LOG] 📊 约束违反阈值 epsilon: {constraint_epsilon}")
-
-    # 进化循环（使用 torch.no_grad() 优化显存）
-    for it in range(generations):
-        # 评估当前种群（双目标）
-        # 修复 5/10：更新返回值处理
-        objectives_current, scores_current, losses_current, diagnostics_current = compute_objectives(
-            malicious_set,
-            benign_refs,
-            constraint_thresholds,
-            g_safe,
-            score_mode=score_mode
+    for gen in range(generations):
+        # Evaluate current population
+        objectives, constraint_scores, scores_dict, total_cv = compute_dual_objectives(
+            population, benign_mean, constraints, g_attack, context
         )
 
-        # 选择父代（NSGA-II选择）- 修复 18/10：不创建完整 parents 副本
-        parent_idx = nsga2_select(objectives_current, malicious_set, EVOLUTION_POP_SIZE)
+        # Binary tournament parent selection
+        parent_indices = binary_tournament_selection(objectives, pop_size)
 
-        # 生成子代：使用 SBX（Simulated Binary Crossover）+ 变异
-        # 修复 19/10：预分配 offspring，不创建 children 列表
-        num_children = EVOLUTION_POP_SIZE
-        perm = torch.randperm(EVOLUTION_POP_SIZE, device=device)
-        offspring = torch.empty_like(malicious_set)
+        # Generate offspring
+        offspring = torch.empty_like(population)
+        perm = torch.randperm(pop_size, device=device)
 
-        crossover_prob = getattr(args, 'sbx_crossover_prob', 0.9)
-        eta = float(getattr(args, 'sbx_eta', 15.0))
-        D = benign_mean.numel()
+        for i in range(0, pop_size, 2):
+            p1_idx = parent_indices[perm[i % pop_size]]
+            p2_idx = parent_indices[perm[(i + 1) % pop_size]]
 
-        # 修复 20/10：SBX 按维度分块（可选）
-        mos_dimension_chunk_size = getattr(args, 'mos_dimension_chunk_size', 262144)
-        use_chunked_sbx = D > mos_dimension_chunk_size
+            parent1 = population[p1_idx]
+            parent2 = population[p2_idx]
 
-        for i in range(0, num_children, 2):
-            p1 = malicious_set[parent_idx[perm[i % EVOLUTION_POP_SIZE]]]
-            p2 = malicious_set[parent_idx[perm[(i+1) % EVOLUTION_POP_SIZE]]]
+            # Crossover
+            child1, child2 = sbx_crossover(parent1, parent2, eta, crossover_prob)
 
-            if use_chunked_sbx:
-                # 分块 SBX
-                child1 = torch.empty_like(p1)
-                child2 = torch.empty_like(p2)
+            # Mutation
+            child1 = mutation(child1, benign_std, mutation_scale)
+            child2 = mutation(child2, benign_std, mutation_scale)
 
-                for start in range(0, D, mos_dimension_chunk_size):
-                    end = min(start + mos_dimension_chunk_size, D)
-                    chunk_size = end - start
-
-                    p1_chunk = p1[start:end]
-                    p2_chunk = p2[start:end]
-
-                    u = torch.rand(chunk_size, device=device)
-                    mask = torch.rand(chunk_size, device=device) <= crossover_prob
-                    beta = torch.empty(chunk_size, device=device)
-                    le = u <= 0.5
-                    beta[le] = (2.0 * u[le]) ** (1.0 / (eta + 1.0))
-                    beta[~le] = (1.0 / (2.0 * (1.0 - u[~le]))) ** (1.0 / (eta + 1.0))
-
-                    c1_chunk = 0.5 * ((1 + beta) * p1_chunk + (1 - beta) * p2_chunk)
-                    c2_chunk = 0.5 * ((1 - beta) * p1_chunk + (1 + beta) * p2_chunk)
-                    c1_chunk[~mask] = p1_chunk[~mask]
-                    c2_chunk[~mask] = p2_chunk[~mask]
-
-                    child1[start:end] = c1_chunk
-                    child2[start:end] = c2_chunk
-            else:
-                # 原始完整 SBX
-                u = torch.rand(D, device=device)
-                mask = torch.rand(D, device=device) <= crossover_prob
-                beta = torch.empty(D, device=device)
-                le = u <= 0.5
-                beta[le] = (2.0 * u[le]) ** (1.0 / (eta + 1.0))
-                beta[~le] = (1.0 / (2.0 * (1.0 - u[~le]))) ** (1.0 / (eta + 1.0))
-
-                child1 = 0.5 * ((1 + beta) * p1 + (1 - beta) * p2)
-                child2 = 0.5 * ((1 - beta) * p1 + (1 + beta) * p2)
-                child1[~mask] = p1[~mask]
-                child2[~mask] = p2[~mask]
-
-            # 修复 4/12：使用新的变异策略
-            if mutation_mode == 'benign_std':
-                # 基于良性标准差的逐维变异（默认推荐）
-                noise1 = torch.randn_like(child1) * benign_std * mutation_scale
-                noise2 = torch.randn_like(child2) * benign_std * mutation_scale
-            elif mutation_mode == 'unit_norm':
-                # 固定范数随机方向变异
-                noise1 = torch.randn_like(child1)
-                noise1 = noise1 / (torch.norm(noise1) + 1e-12)
-                mutation_radius = mutation_radius_ratio * max_dev_threshold
-                noise1 = noise1 * mutation_radius
-
-                noise2 = torch.randn_like(child2)
-                noise2 = noise2 / (torch.norm(noise2) + 1e-12)
-                noise2 = noise2 * mutation_radius
-            else:
-                # 回退到默认（兼容旧代码）
-                noise1 = torch.randn_like(child1) * benign_std * 0.05
-                noise2 = torch.randn_like(child2) * benign_std * 0.05
-
-            # 方向性推动（参数化，不再硬编码）
-            dir_step = dir_step_ratio * max_dev_threshold
-
-            # 让子代不仅有随机突变，还顺着指导梯度往前走一步
-            if has_valid_guidance:
-                directional_push = dir_step * g_safe
-                push_scale1 = torch.empty(1, device=device).uniform_(0.5, 1.5).item()
-                push_scale2 = torch.empty(1, device=device).uniform_(0.5, 1.5).item()
-                noise1 = noise1 + directional_push * push_scale1
-                noise2 = noise2 + directional_push * push_scale2
-
-                # 记录方向性推动范数（用于日志）
-                if (it + 1) % 10 == 0 or it == 0:
-                    directional_push_norms_log.append(torch.norm(directional_push).item())
-
-            # 记录变异噪声范数（用于日志）
-            if (it + 1) % 10 == 0 or it == 0:
-                mutation_norms_log.extend([torch.norm(noise1).item(), torch.norm(noise2).item()])
-
-            # 应用生存掩码
-            noise1 = noise1 * survival_mask
-            noise2 = noise2 * survival_mask
-            child1 = child1 + noise1
-            child2 = child2 + noise2
-
-            # 直接写入 offspring
             offspring[i] = child1
-            if i + 1 < num_children:
+            if i + 1 < pop_size:
                 offspring[i + 1] = child2
 
-        # 修复 6/10: 投影裁剪（变异后、评估前）
-        offspring, offspring_clipped, offspring_pre_norms = project_to_attack_budget(
-            offspring,
-            benign_mean,
-            max_dev_threshold
+        # Check offspring for NaN/Inf
+        if not torch.isfinite(offspring).all():
+            print(f"[MOS-Core] WARNING: Offspring contains NaN/Inf at gen {gen+1}, skipping generation")
+            continue
+
+        # Project offspring to budget
+        offspring, _, _ = project_to_attack_budget(offspring, benign_mean, max_dev_threshold)
+
+        # Evaluate offspring
+        objectives_offspring, _, _, _ = compute_dual_objectives(
+            offspring, benign_mean, constraints, g_attack, context
         )
 
-        log_cuda_memory("after offspring", mos_memory_debug)
+        # Combine parent and offspring
+        combined_pop = torch.cat([population, offspring], dim=0)
+        combined_obj = torch.cat([objectives, objectives_offspring], dim=1)
 
-        # 修复 21/10：分别评估三个种群，避免创建完整 combined 张量
-        log_cuda_memory("before objective evaluation", mos_memory_debug)
+        # Environmental selection
+        selected_indices = nsga2_select(combined_obj, pop_size)
 
-        objectives_offspring, _, _, _ = compute_objectives(
-            offspring,
-            benign_refs,
-            constraint_thresholds,
-            g_safe,
-            score_mode=score_mode
+        # Update population
+        population = combined_pop[selected_indices]
+
+        # Re-evaluate updated population for accurate logging
+        objectives, constraint_scores, scores_dict, total_cv = compute_dual_objectives(
+            population, benign_mean, constraints, g_attack, context
         )
 
-        objectives_archive, _, _, _ = compute_objectives(
-            archive,
-            benign_refs,
-            constraint_thresholds,
-            g_safe,
-            score_mode=score_mode
-        )
+        # Compute diagnostic metrics
+        _, cv_ratios = compute_cv(population, benign_mean, constraints, context)
 
-        # 只拼接小的目标矩阵
-        objectives_combined = torch.cat(
-            [objectives_current, objectives_offspring, objectives_archive],
-            dim=1,
-        )
+        # Logging
+        if (gen + 1) % 10 == 0 or gen == 0:
+            # Stealth and destructiveness
+            stealth = -objectives[0]
+            destructiveness = -objectives[1]
+            best_stealth = stealth.max().item()
+            mean_stealth = stealth.mean().item()
+            best_destruct = destructiveness.max().item()
+            mean_destruct = destructiveness.mean().item()
 
-        log_cuda_memory("after objective evaluation", mos_memory_debug)
+            # CV metrics
+            min_cv = total_cv.min().item()
+            mean_cv = total_cv.mean().item()
+            feasible_ratio = (total_cv <= 1e-6).float().mean().item()
 
-        # NSGA-II 选择（基于拼接的目标）
-        selected_global_idx = nsga2_select(objectives_combined, None, EVOLUTION_POP_SIZE)
-
-        # 修复 21/10：根据索引从三个来源收集
-        P = EVOLUTION_POP_SIZE
-        next_population = torch.empty_like(malicious_set)
-
-        for i, global_idx in enumerate(selected_global_idx):
-            if global_idx < P:
-                # 来自当前种群
-                next_population[i] = malicious_set[global_idx]
-            elif global_idx < 2 * P:
-                # 来自 offspring
-                next_population[i] = offspring[global_idx - P]
+            # Feasible destructiveness
+            feasible_mask = total_cv <= 1e-6
+            if feasible_mask.any():
+                max_feasible_destruct = destructiveness[feasible_mask].max().item()
             else:
-                # 来自 archive
-                next_population[i] = archive[global_idx - 2 * P]
+                max_feasible_destruct = None
 
-        malicious_set = next_population
+            # Pareto front size
+            fronts = nondominated_sort(objectives)
+            pareto_front_size = len(fronts[0]) if fronts else 0
 
-        # 更新 archive（同样从三个来源收集）
-        fronts = nondominated_sort(objectives_combined)
-        new_archive_idx = []
-        for f in fronts:
-            for idx in f:
-                new_archive_idx.append(idx)
-                if len(new_archive_idx) >= archive_size:
-                    break
-            if len(new_archive_idx) >= archive_size:
-                break
+            # Budget usage
+            norms = torch.norm(population - benign_mean, dim=1)
+            budget_ratios = norms / max_dev_threshold
+            mean_budget = budget_ratios.mean().item()
+            max_budget = budget_ratios.max().item()
 
-        if new_archive_idx:
-            new_archive = torch.empty(len(new_archive_idx), D, device=device)
-            for i, global_idx in enumerate(new_archive_idx):
-                if global_idx < P:
-                    new_archive[i] = malicious_set[global_idx]
-                elif global_idx < 2 * P:
-                    new_archive[i] = offspring[global_idx - P]
-                else:
-                    new_archive[i] = archive[global_idx - 2 * P]
-            archive = new_archive[:archive_size]
+            # Per-constraint ratios
+            radial_ratios = cv_ratios['radial']
+            radial_scores = scores_dict['radial']
+            sign_ratios = cv_ratios['sign']
+            sign_scores = scores_dict['sign']
 
-        log_cuda_memory("generation end", mos_memory_debug)
-
-        # 每10代打印一次进度（包含详细得分、变异统计和约束详情）
-        if (it + 1) % 10 == 0 or it == 0:
-            avg_stealth = -objectives_current[0].mean().item()
-            avg_destructiveness = -objectives_current[1].mean().item()
-            avg_cv = -objectives_current[2].mean().item()
-
-            # 计算种群统计
-            population_norms = torch.norm(malicious_set - benign_mean, dim=1)
-            norm_ratios = population_norms / (max_dev_threshold + 1e-12)
-            # 修复 7/10：使用投影前的范数统计真实裁剪比例（在 offspring 生成时已记录）
-
-            # CV 统计
-            population_cv = diagnostics_current['total_cv']
-            min_cv = population_cv.min().item()
-            mean_cv = population_cv.mean().item()
-            feasible_count = (population_cv <= constraint_epsilon).sum().item()
-            feasible_ratio = feasible_count / P
-
-            # 提取当前代最优个体（第一前沿的首个）
-            current_fronts = nondominated_sort(objectives_current)
-            if current_fronts and current_fronts[0]:
-                best_idx_current = current_fronts[0][0]
-                best_stealth = -objectives_current[0, best_idx_current].item()
-                best_destructiveness = -objectives_current[1, best_idx_current].item()
-                best_cv_obj = -objectives_current[2, best_idx_current].item()
-                selected_cv = population_cv[best_idx_current].item()
-
-                # 提取各约束得分
-                radial_s = scores_current.get('radial', scores_current.get('krum'))[best_idx_current].item()
-                sign_s = scores_current['sign'][best_idx_current].item()
-                pca_s = scores_current['pca'][best_idx_current].item()
-                subspace_s = scores_current['subspace'][best_idx_current].item()
-                cohesion_s = scores_current.get('cohesion', scores_current.get('group'))[best_idx_current].item()
-
-                # 提取约束 loss（原始值，用于判断是否真正违反约束）
-                radial_l = losses_current.get('radial', losses_current.get('krum'))[best_idx_current].item()
-                sign_l = losses_current['sign'][best_idx_current].item()
-
-                # 修复 5/10: 从 diagnostics 中提取约束违反度
-                ratios_current = diagnostics_current['ratios']
-                violations_current = diagnostics_current['violations']
-
-                radial_ratio = ratios_current.get('radial', ratios_current.get('krum'))[best_idx_current].item()
-                sign_ratio = ratios_current['sign'][best_idx_current].item()
-                radial_violation = violations_current.get('radial', violations_current.get('krum'))[best_idx_current].item()
-                sign_violation = violations_current['sign'][best_idx_current].item()
-
-                print(f"[MOS LOG]   Generation {it+1}/{generations}: "
-                      f"隐蔽性={avg_stealth:.3f}, 破坏性={avg_destructiveness:.3f}, CV={avg_cv:.3f}")
-                print(f"[MOS LOG]     种群 CV: min={min_cv:.4f}, mean={mean_cv:.4f}, feasible={feasible_ratio:.2%}")
-                print(f"[MOS LOG]     最优个体: 隐蔽性={best_stealth:.3f}, 破坏性={best_destructiveness:.3f}, CV={selected_cv:.4f}")
-                print(f"[MOS LOG]     约束得分: Radial={radial_s:.3f}, Sign={sign_s:.3f}, "
-                      f"PCA={pca_s:.3f}, Subspace={subspace_s:.3f}, Cohesion={cohesion_s:.3f}")
-                print(f"[MOS LOG]     约束loss: Radial={radial_l:.4f} (阈值={constraint_thresholds.get('radial', constraint_thresholds.get('krum')):.4f}), "
-                      f"Sign={sign_l:.4f} (阈值={constraint_thresholds['sign']:.4f})")
-                print(f"[MOS LOG]     约束比值: Radial={radial_ratio:.3f}, Sign={sign_ratio:.3f}")
-                print(f"[MOS LOG]     约束违反: Radial={radial_violation:.4f}, Sign={sign_violation:.4f}")
-
-                # 变异统计
-                if mutation_norms_log:
-                    mut_min = min(mutation_norms_log)
-                    mut_max = max(mutation_norms_log)
-                    mut_mean = sum(mutation_norms_log) / len(mutation_norms_log)
-                    print(f"[MOS LOG]     变异范数: min={mut_min:.4f}, mean={mut_mean:.4f}, max={mut_max:.4f}")
-                    mutation_norms_log.clear()
-
-                if directional_push_norms_log:
-                    dir_norm = sum(directional_push_norms_log) / len(directional_push_norms_log)
-                    print(f"[MOS LOG]     方向推动范数: {dir_norm:.4f}")
-                    directional_push_norms_log.clear()
-
-                # 种群统计
-                print(f"[MOS LOG]     种群范数比例: min={norm_ratios.min():.3f}, "
-                      f"mean={norm_ratios.mean():.3f}, max={norm_ratios.max():.3f}")
+            print(f"[MOS-Core] Gen {gen+1}/{generations}:")
+            print(f"  Stealth: mean={mean_stealth:.3f}, best={best_stealth:.3f}")
+            print(f"  Destructiveness: mean={mean_destruct:.3f}, best={best_destruct:.3f}")
+            print(f"  CV: mean={mean_cv:.4f}, min={min_cv:.4f}, feasible={feasible_ratio:.2%}")
+            if max_feasible_destruct is not None:
+                print(f"  Max feasible destruct: {max_feasible_destruct:.3f}")
             else:
-                print(f"[MOS LOG]   Generation {it+1}/{generations}: "
-                      f"隐蔽性={avg_stealth:.3f}, 破坏性={avg_destructiveness:.3f}")
+                print(f"  Max feasible destruct: N/A")
+            print(f"  Pareto front size: {pareto_front_size}")
+            print(f"  Budget ratio: mean={mean_budget:.3f}, max={max_budget:.3f}")
+            print(f"  Radial: mean_ratio={radial_ratios.mean():.3f}, max_ratio={radial_ratios.max():.3f}, "
+                  f"mean_score={radial_scores.mean():.3f}")
+            print(f"  Sign: mean_ratio={sign_ratios.mean():.3f}, max_ratio={sign_ratios.max():.3f}, "
+                  f"mean_score={sign_scores.mean():.3f}")
 
-    # 进化完成后，选出最优模板并复制 K 份
-    # 修复 5/10：更新返回值处理
-    final_objectives, final_scores, final_losses, final_diagnostics = compute_objectives(
-        malicious_set,
-        benign_refs,
-        constraint_thresholds,
-        g_safe,
-        score_mode=score_mode
+
+    # ========================================================================
+    # Step 8: Final solution selection
+    # ========================================================================
+    print(f"\n[MOS-Core] Selecting final solution...")
+
+    # Final evaluation
+    final_objectives, final_constraint_scores, final_scores_dict, final_cv = compute_dual_objectives(
+        population, benign_mean, constraints, g_attack, context
     )
 
-    final_fronts = nondominated_sort(final_objectives)
+    # Get final CV ratios for detailed logging
+    final_cv_total, final_cv_ratios = compute_cv(population, benign_mean, constraints, context)
 
-    print(f"\n[MOS LOG] 🏆 进化完成！Pareto前沿包含 {len(final_fronts[0])} 个个体")
+    # Compute final norms and budget ratios
+    final_norms = torch.norm(population - benign_mean, dim=1)
+    final_budget_ratios = final_norms / max_dev_threshold
 
-    # 修复 5/10: 从 diagnostics 中提取约束违反统计
-    final_violations = final_diagnostics['violations']
-    final_ratios = final_diagnostics['ratios']
-    final_total_cv = final_diagnostics['total_cv']
-
-    print(f"[MOS LOG] 📊 约束违反统计（第一前沿）:")
-    for name in diagnostics_current['active_constraints']:
-        if name in final_violations:
-            violations = final_violations[name][final_fronts[0]]
-            num_violated = (violations > 0).sum().item()
-            max_violation = violations.max().item()
-            avg_violation = violations.mean().item()
-            print(f"[MOS LOG]   {name.capitalize()}: {num_violated}/{len(final_fronts[0])} 违反, "
-                  f"最大={max_violation:.4f}, 平均={avg_violation:.4f}")
-
-    print(f"[MOS LOG] 📊 第一前沿个体详细得分：")
-    print(f"[MOS LOG] {'索引':<6} {'隐蔽性':<8} {'破坏性':<12} {'CV_obj':<10} {'Radial':<8} {'Sign':<8} {'PCA':<8} {'Subspace':<10} {'CV':<8} {'Feasible':<10}")
-    print(f"[MOS LOG] {'-'*115}")
-
-    for idx in final_fronts[0]:
-        stealth = -final_objectives[0, idx].item()
-        destructiveness = -final_objectives[1, idx].item()
-        cv_obj = final_objectives[2, idx].item()
-        radial_score = final_scores.get('radial', final_scores.get('krum'))[idx].item() if idx < len(final_scores.get('radial', final_scores.get('krum'))) else 0.0
-        sign_score = final_scores['sign'][idx].item() if idx < len(final_scores['sign']) else 0.0
-        pca_score = final_scores['pca'][idx].item() if idx < len(final_scores['pca']) else 0.0
-        subspace_score = final_scores['subspace'][idx].item() if idx < len(final_scores['subspace']) else 0.0
-        cv = final_total_cv[idx].item()
-        feasible = "Yes" if cv <= constraint_epsilon else "No"
-
-        print(f"[MOS LOG] {idx:<6} {stealth:<8.3f} {destructiveness:<12.3f} {cv_obj:<10.4f} {radial_score:<8.3f} {sign_score:<8.3f} {pca_score:<8.3f} {subspace_score:<10.3f} {cv:<8.4f} {feasible:<10}")
-
-    # 修复 5/10：选择最优解时 CV 优先级高于隐蔽性
-    # 1. 优先选择可行解（CV <= epsilon）
-    # 2. 若无可行解，选择 CV 最小的一组
-    # 3. 在满足 CV 条件的解中，选择最接近理想点的
-
-    front_indices = final_fronts[0]
-    front_cv = final_total_cv[front_indices]
-    stealth_scores = -final_objectives[0, front_indices]
-    destructiveness_scores = -final_objectives[1, front_indices]
-
-    # 步骤 1：筛选可行解
-    feasible_mask = front_cv <= constraint_epsilon
-    feasible_indices = [front_indices[i] for i in range(len(front_indices)) if feasible_mask[i]]
-
-    if feasible_indices:
-        print(f"\n[MOS LOG] 🎯 找到 {len(feasible_indices)} 个可行解（CV <= {constraint_epsilon}）")
-        candidate_indices = feasible_indices
-        candidate_cv = front_cv[feasible_mask]
-    else:
-        # 步骤 2：无可行解，选择 CV 最小的一组
-        min_cv = front_cv.min().item()
-        cv_threshold = min_cv * 1.1  # 允许 10% 的误差
-        low_cv_mask = front_cv <= cv_threshold
-        candidate_indices = [front_indices[i] for i in range(len(front_indices)) if low_cv_mask[i]]
-        candidate_cv = front_cv[low_cv_mask]
-        print(f"\n[MOS LOG] ⚠️ 无可行解，选择 CV 最小的 {len(candidate_indices)} 个个体（CV <= {cv_threshold:.4f}）")
-
-    # 步骤 3：在候选集中选择最接近理想点的
-    candidate_stealth = torch.tensor(
-        [stealth_scores[front_indices.index(idx)] for idx in candidate_indices],
-        device=device
-    )
-    candidate_destructiveness = torch.tensor(
-        [destructiveness_scores[front_indices.index(idx)] for idx in candidate_indices],
-        device=device
+    # Select best solution (NO CV filtering)
+    best_idx, selection_diagnostics = select_final_solution(
+        population,
+        final_objectives,
+        total_cv=final_cv_total,
+        constraint_scores=final_constraint_scores,
+        scores_dict=final_scores_dict,
+        args=args
     )
 
-    # 归一化破坏性到[0, 1]
-    dest_min = candidate_destructiveness.min()
-    dest_max = candidate_destructiveness.max()
-    if dest_max - dest_min > 1e-9:
-        candidate_destructiveness_norm = (candidate_destructiveness - dest_min) / (dest_max - dest_min)
-    else:
-        candidate_destructiveness_norm = torch.ones_like(candidate_destructiveness)
+    # Print selection parameters
+    print(f"[MOS-Core] Selection parameters:")
+    print(f"  Lambda_s (stealth weight): {selection_diagnostics.get('lambda_s', 0.5):.2f}")
+    print(f"  Lambda_a (attack weight): {selection_diagnostics.get('lambda_a', 0.5):.2f}")
+    print(f"  Attack floor ratio: {selection_diagnostics.get('attack_floor', 0.0):.4f}")
 
-    # 计算欧氏距离到理想点(1.0, 1.0)
-    distances = torch.sqrt((1.0 - candidate_stealth)**2 + (1.0 - candidate_destructiveness_norm)**2)
+    # Print Pareto front summary
+    print(f"\n[MOS-Core] Pareto front summary:")
+    print(f"  Front size: {selection_diagnostics.get('pareto_front_size', 0)}")
+    print(f"  Stealth range: [{selection_diagnostics.get('pareto_stealth_min', 0):.3f}, "
+          f"{selection_diagnostics.get('pareto_stealth_max', 0):.3f}]")
+    print(f"  Destructiveness range: [{selection_diagnostics.get('pareto_destructiveness_min', 0):.3f}, "
+          f"{selection_diagnostics.get('pareto_destructiveness_max', 0):.3f}]")
+    if 'pareto_cv_min' in selection_diagnostics:
+        print(f"  CV range: [{selection_diagnostics.get('pareto_cv_min', 0):.4f}, "
+              f"{selection_diagnostics.get('pareto_cv_max', 0):.4f}]")
+    print(f"  Candidates after attack floor: {selection_diagnostics.get('candidates_after_floor', 0)}")
 
-    # 选择距离最小的个体
-    best_idx_in_candidate = torch.argmin(distances).item()
-    best_idx = candidate_indices[best_idx_in_candidate]
-    best_template = malicious_set[best_idx].clone().detach()
+    # Detailed first Pareto front logging
+    fronts = nondominated_sort(final_objectives)
+    if fronts and fronts[0]:
+        print(f"\n[MOS-Core] First Pareto front detailed breakdown:")
+        print(f"[MOS-Core] {'Pos':<4} {'Idx':<4} {'Stealth':<8} {'Destruct':<9} {'CV':<8} "
+              f"{'R_ratio':<8} {'R_score':<8} {'S_ratio':<8} {'S_score':<8} "
+              f"{'Norm':<8} {'Budget%':<8} {'NormS':<7} {'NormA':<7} {'Score':<7} {'Floor':<6} {'Sel':<4}")
 
-    best_cv = final_total_cv[best_idx].item()
-    best_feasible = "Yes" if best_cv <= constraint_epsilon else "No"
+        front_indices = fronts[0]
+        front_stealth = -final_objectives[0, front_indices]
+        front_destruct = -final_objectives[1, front_indices]
 
-    print(f"\n[MOS LOG] 🎯 最优解选择策略：CV 优先 + 最接近理想点")
-    print(f"[MOS LOG] 🏆 选中个体索引: {best_idx}")
-    print(f"[MOS LOG]   ✓ 隐蔽性得分: {-final_objectives[0, best_idx].item():.3f}")
-    print(f"[MOS LOG]   ✓ 破坏性: {-final_objectives[1, best_idx].item():.3f}")
-    print(f"[MOS LOG]   ✓ Total CV: {best_cv:.4f}")
-    print(f"[MOS LOG]   ✓ Feasible: {best_feasible}")
-    print(f"[MOS LOG]   ✓ 到理想点距离: {distances[best_idx_in_candidate].item():.4f}")
-    print(f"[MOS LOG] 📋 将最优模板复制 {K} 份并添加微小噪声以规避聚类检测...")
+        # Normalize for display
+        s_min, s_max = front_stealth.min(), front_stealth.max()
+        d_min, d_max = front_destruct.min(), front_destruct.max()
+
+        if s_max - s_min > 1e-9:
+            norm_s = (front_stealth - s_min) / (s_max - s_min)
+        else:
+            norm_s = torch.full_like(front_stealth, 0.5)
+
+        if d_max - d_min > 1e-9:
+            norm_d = (front_destruct - d_min) / (d_max - d_min)
+        else:
+            norm_d = torch.full_like(front_destruct, 0.5)
+
+        lambda_s = selection_diagnostics.get('lambda_s', 0.5)
+        lambda_a = selection_diagnostics.get('lambda_a', 0.5)
+        balanced = lambda_s * norm_s + lambda_a * norm_d
+
+        attack_floor = selection_diagnostics.get('attack_floor', 0.0)
+
+        for pos, idx in enumerate(front_indices):
+            idx_val = idx.item() if isinstance(idx, torch.Tensor) else idx
+            stealth_val = front_stealth[pos].item()
+            destruct_val = front_destruct[pos].item()
+            cv_val = final_cv_total[idx].item()
+            radial_ratio = final_cv_ratios['radial'][idx].item()
+            radial_score = final_scores_dict['radial'][idx].item()
+            sign_ratio = final_cv_ratios['sign'][idx].item()
+            sign_score = final_scores_dict['sign'][idx].item()
+            norm_val = final_norms[idx].item()
+            budget_pct = final_budget_ratios[idx].item() * 100
+            norm_s_val = norm_s[pos].item()
+            norm_d_val = norm_d[pos].item()
+            score_val = balanced[pos].item()
+            passes_floor = destruct_val >= attack_floor
+            is_selected = (idx_val == best_idx)
+
+            print(f"[MOS-Core] {pos:<4} {idx_val:<4} {stealth_val:<8.3f} {destruct_val:<9.2f} {cv_val:<8.4f} "
+                  f"{radial_ratio:<8.3f} {radial_score:<8.3f} {sign_ratio:<8.3f} {sign_score:<8.3f} "
+                  f"{norm_val:<8.3f} {budget_pct:<8.1f} {norm_s_val:<7.3f} {norm_d_val:<7.3f} "
+                  f"{score_val:<7.3f} {'Y' if passes_floor else 'N':<6} {'***' if is_selected else '':<4}")
+
+    # Extract best solution details
+    best_template = population[best_idx].clone().detach()
+    best_stealth = -final_objectives[0, best_idx].item()
+    best_destruct = -final_objectives[1, best_idx].item()
+    best_cv = final_cv_total[best_idx].item()
+    best_norm = final_norms[best_idx].item()
+    best_budget_ratio = final_budget_ratios[best_idx].item()
+
+    print(f"\n[MOS-Core] Selected solution (index={best_idx}):")
+    print(f"[MOS-Core]   Constraint pass score (R): {best_stealth:.3f}")
+    print(f"[MOS-Core]   Destructiveness (A): {best_destruct:.3f}")
+    print(f"[MOS-Core]   Total CV: {best_cv:.4f}")
+    print(f"[MOS-Core]   Deviation norm: {best_norm:.4f}")
+    print(f"[MOS-Core]   Budget usage: {best_budget_ratio:.2%}")
+
+    # Per-constraint diagnostics
+    print(f"[MOS-Core] Per-constraint details:")
+    for constraint in constraints:
+        score = final_scores_dict[constraint.name][best_idx].item()
+        ratio = final_cv_ratios[constraint.name][best_idx].item()
+        loss = constraint.loss(
+            population[best_idx].unsqueeze(0), benign_mean, context
+        ).item()
+        threshold = constraint.threshold.item()
+        print(f"[MOS-Core]   {constraint.name.capitalize()}: score={score:.3f}, "
+              f"ratio={ratio:.3f}, loss={loss:.4f}, threshold={threshold:.4f}")
+
+    # ========================================================================
+    # Step 9: Generate K malicious updates
+    # ========================================================================
+    print(f"\n[MOS-Core] Generating {K} malicious updates...")
 
     noise_scale = getattr(args, 'template_noise_scale', 1e-4)
-
-    # 修复 23/10：逐个生成，避免同时创建 K×D 的三份张量
-    log_cuda_memory("before final output", mos_memory_debug)
-
     output_norms = []
-    noise_norms = []
 
     for i in range(K):
-        # 生成噪声
+        # Add small noise to avoid identical updates
         noise_i = torch.randn_like(best_template) * noise_scale * benign_std
-
-        # 添加噪声
         optimized_grad_i = best_template + noise_i
 
-        # 投影到预算内
-        optimized_grad_i, _, norm_i = project_to_attack_budget(
-            optimized_grad_i.unsqueeze(0),
-            benign_mean,
-            max_dev_threshold
+        # Project to budget
+        optimized_grad_i, _, _ = project_to_attack_budget(
+            optimized_grad_i.unsqueeze(0), benign_mean, max_dev_threshold
         )
         optimized_grad_i = optimized_grad_i.squeeze(0)
 
-        # 记录统计
-        noise_norms.append(torch.norm(noise_i).item())
         output_norms.append(torch.norm(optimized_grad_i - benign_mean).item())
 
-        # 转换回网络字典格式
+        # Convert back to dictionary format
         all_updates[i] = vector_to_net_dict(
             optimized_grad_i,
             copy.deepcopy(all_updates[i])
         )
 
-    print(f"[MOS LOG] 🔊 噪声强度: {noise_scale} * benign_std")
-    print(f"[MOS LOG] 🔊 实际噪声范数范围: [{min(noise_norms):.6f}, {max(noise_norms):.6f}]")
-    print(f"[MOS LOG] 🔊 输出范数范围: [{min(output_norms):.4f}, {max(output_norms):.4f}], mean={sum(output_norms)/len(output_norms):.4f}")
+    print(f"[MOS-Core] Template noise scale: {noise_scale}")
+    print(f"[MOS-Core] Output norms: min={min(output_norms):.4f}, "
+          f"mean={sum(output_norms)/len(output_norms):.4f}, max={max(output_norms):.4f}")
 
+    # ========================================================================
+    # Step 10: Return
+    # ========================================================================
     historical_perturbation = (best_template - benign_mean).unsqueeze(0).detach()
-    pert_norm = torch.norm(historical_perturbation).item()
-    print(f"[MOS LOG] 最优模板扰动范数: {pert_norm:.4f}")
 
-    log_cuda_memory("attack exit", mos_memory_debug)
-    print("-" * 50)
+    print(f"[MOS-Core] Attack completed successfully")
+    print(f"{'='*60}\n")
 
     return all_updates, historical_perturbation
 
-
-def crowding_distance(front_indices, objs):
-    M, _ = objs.shape
-    F = len(front_indices)
-    distances = torch.zeros(F, device=objs.device)
-
-    # 边界情况：只有1-2个个体，全部保留
-    if F <= 2:
-        return torch.full((F,), float('inf'), device=objs.device)
-
-    # 对每个目标维度计算拥挤度
-    for m in range(M):
-        # 提取该前沿在第m个目标上的值
-        obj_values = objs[m, front_indices]
-        sorted_idx = torch.argsort(obj_values)
-
-        # 边界点设为无穷大（保证Pareto前沿的极值点被保留）
-        distances[sorted_idx[0]] = float('inf')
-        distances[sorted_idx[-1]] = float('inf')
-
-        # 计算目标范围（归一化用）
-        obj_range = obj_values[sorted_idx[-1]] - obj_values[sorted_idx[0]]
-        if obj_range < 1e-9:
-            continue  # 该目标维度无差异，跳过
-
-        # 中间点：距离 = (右邻居 - 左邻居) / 范围
-        for i in range(1, F - 1):
-            distances[sorted_idx[i]] += (
-                obj_values[sorted_idx[i+1]] - obj_values[sorted_idx[i-1]]
-            ) / obj_range
-
-    return distances
-
-
-def nsga2_select(objs, population, pop_size):
-    M, N = objs.shape
-    fronts = nondominated_sort(objs)  # 复用现有的非支配排序
-
-    chosen = []
-    for front in fronts:
-        if len(chosen) + len(front) <= pop_size:
-            # 整个前沿都能放下，全选
-            chosen.extend(front)
-        else:
-            # 最后一个前沿：需要筛选部分个体
-            remaining_slots = pop_size - len(chosen)
-
-            # 计算该前沿的拥挤度距离
-            distances = crowding_distance(front, objs)
-
-            # 按拥挤度降序排序，选择距离最大的个体（更分散）
-            sorted_indices = torch.argsort(distances, descending=True)
-            selected = [front[i] for i in sorted_indices[:remaining_slots].tolist()]
-            chosen.extend(selected)
-            break
-
-    return chosen
-
-
-def compute_objectives(pop, benign_refs, constraint_thresholds, g_combined_unit, score_mode='smooth'):
-    """
-    计算种群的双目标（隐蔽性和破坏性）
-
-    Returns:
-        objectives: (2, P) 目标矩阵
-        constraint_scores: 各约束得分字典
-        constraint_losses: 各约束原始损失字典
-        diagnostics: 诊断信息字典（包含 violations, ratios, total_cv）
-    """
-    P = pop.shape[0]
-    device = benign_refs['device']
-
-    benign_mean = benign_refs['mean']
-    survival_mask = benign_refs['survival_mask']
-
-    # 获取温度参数
-    temperature = getattr(benign_refs.get('args'), 'constraint_score_temperature', 0.5)
-
-    # ========================================================================
-    # Step 1: 计算 centered 一次，传递给约束计算
-    # ========================================================================
-    centered = pop - benign_mean
-
-    # ========================================================================
-    # Step 2: 使用统一函数计算所有约束 loss
-    # ========================================================================
-    constraint_losses = compute_raw_constraint_losses(pop, benign_refs, centered=centered)
-
-    # ========================================================================
-    # Step 3: 将每个约束 loss 转换为得分
-    # ========================================================================
-    # 修复 4/10：只处理已启用的约束
-    args_obj = benign_refs.get('args')
-    enable_cohesion = getattr(args_obj, 'enable_cohesion_constraint', False)
-    use_dnc = benign_refs['use_dnc']
-    enable_subspace = use_dnc and len(benign_refs.get('subspace_samples', [])) > 0
-
-    # 确定活跃约束
-    active_constraints = ['radial', 'sign']
-    if use_dnc and benign_refs.get('pca_principal_dirs') is not None:
-        active_constraints.append('pca')
-    if enable_subspace:
-        active_constraints.append('subspace')
-    if enable_cohesion:
-        active_constraints.append('cohesion')
-
-    constraint_scores = {}
-    for name, loss in constraint_losses.items():
-        if name in ['krum', 'group']:  # 跳过别名
-            continue
-
-        threshold = constraint_thresholds.get(name, 1.0)
-
-        # 只为活跃约束计算得分
-        if name in active_constraints and threshold > 0:
-            constraint_scores[name] = compute_constraint_score(
-                loss, threshold, mode=score_mode, temperature=temperature
-            )
-        else:
-            # 未启用的约束不计算得分
-            constraint_scores[name] = torch.zeros(P, device=device)
-
-    # 添加别名
-    constraint_scores['krum'] = constraint_scores.get('radial', torch.zeros(P, device=device))
-    constraint_scores['group'] = constraint_scores.get('cohesion', torch.zeros(P, device=device))
-
-    # ========================================================================
-    # Step 4: 计算约束违反度 (Constraint Violation)
-    # ========================================================================
-    constraint_violations, constraint_ratios = compute_constraint_violations(
-        constraint_losses, constraint_thresholds
-    )
-
-    # 计算总违反度（只对活跃约束）
-    constraint_weights = {
-        'radial': getattr(args_obj, 'weight_radial', 1.0),
-        'sign': getattr(args_obj, 'weight_sign', 0.5),
-        'pca': getattr(args_obj, 'weight_pca', 1.0),
-        'subspace': getattr(args_obj, 'weight_subspace', 0.5),
-        'cohesion': getattr(args_obj, 'weight_cohesion', 0.3),
-    }
-
-    total_cv = torch.zeros(P, device=device)
-    for name in active_constraints:
-        weight = constraint_weights.get(name, 1.0)
-        total_cv += weight * constraint_violations[name]
-
-    # 打包诊断信息
-    diagnostics = {
-        'ratios': constraint_ratios,
-        'violations': constraint_violations,
-        'total_cv': total_cv,
-        'active_constraints': active_constraints,
-    }
-
-    # ========================================================================
-    # Step 5: 加权求和得到总隐蔽性得分 (stealth_score)
-    # ========================================================================
-    total_score = torch.zeros(P, device=device)
-    total_weight = 0.0
-
-    for name in active_constraints:
-        weight = constraint_weights.get(name, 1.0)
-        threshold = constraint_thresholds.get(name, 0.0)
-
-        # 只计入已启用的约束（阈值 > 0）
-        if threshold > 0:
-            total_score += constraint_scores[name] * weight
-            total_weight += weight
-
-    # 归一化到 [0, 1]
-    stealth_score = total_score / (total_weight + 1e-12)
-
-    # ========================================================================
-    # Step 6: 计算破坏性（与指导梯度的对齐度）
-    # ========================================================================
-    # 修复 16/10：使用 centered 避免重复计算 masked_deviation
-    masked_guidance = survival_mask * g_combined_unit
-
-    # 对齐度：与指导梯度的点积（越大越好）
-    alignment = centered @ masked_guidance
-
-    # 目标1：隐蔽性（负号转换：最大化得分 → 最小化负得分）
-    obj_stealth = -stealth_score
-
-    # 目标2：破坏性（负号转换：最大化对齐 → 最小化负对齐）
-    obj_destructiveness = -alignment
-
-    # 目标3：CV（约束违反度，使用 log1p 平滑）
-    obj_cv = torch.log1p(total_cv)
-
-    objectives = torch.stack([obj_stealth, obj_destructiveness, obj_cv], dim=0)
-
-    return objectives, constraint_scores, constraint_losses, diagnostics
-
-
-# ------ 非支配排序（NSGA-II 和 NSGA-III 共用）------
-def nondominated_sort(objs):
-    M, N = objs.shape
-    S = [set() for _ in range(N)]  # 每个个体支配的个体集合
-    n = torch.zeros(N, dtype=torch.int32, device=objs.device)  # 支配该个体的个体数
-    rank = torch.full((N,), -1, dtype=torch.int32, device=objs.device)
-    fronts = []
-
-    # 计算支配关系
-    for p in range(N):
-        for q in range(N):
-            if p == q:
-                continue
-            # p支配q？（所有目标不差，至少一个目标更优）
-            less_eq = torch.all(objs[:, p] <= objs[:, q])
-            strictly_less = torch.any(objs[:, p] < objs[:, q])
-            if less_eq and strictly_less:
-                S[p].add(q)  # p支配q
-            elif torch.all(objs[:, q] <= objs[:, p]) and torch.any(objs[:, q] < objs[:, p]):
-                n[p] += 1  # q支配p
-
-        # 没有被支配的个体属于Front 0
-        if n[p] == 0:
-            rank[p] = 0
-
-    # Front 0
-    current_front = [i for i in range(N) if rank[i] == 0]
-    i = 0
-
-    # 逐层构建后续前沿
-    while current_front:
-        fronts.append(current_front)
-        next_front = []
-        for p in current_front:
-            for q in S[p]:
-                n[q] -= 1
-                if n[q] == 0:
-                    rank[q] = i + 1
-                    next_front.append(q)
-        i += 1
-        current_front = next_front
-
-    return fronts
-
-def crowding_distance(front_indices, objs):
-    """
-    计算拥挤度距离（NSGA-II核心组件）
-    """
-    M, _ = objs.shape
-    F = len(front_indices)
-    distances = torch.zeros(F, device=objs.device)
-
-    if F <= 2:
-        return torch.full((F,), float('inf'), device=objs.device)
-
-    for m in range(M):
-        obj_values = objs[m, front_indices]
-        sorted_idx = torch.argsort(obj_values)
-        distances[sorted_idx[0]] = float('inf')
-        distances[sorted_idx[-1]] = float('inf')
-        obj_range = obj_values[sorted_idx[-1]] - obj_values[sorted_idx[0]]
-        if obj_range < 1e-9:
-            continue
-        for i in range(1, F - 1):
-            distances[sorted_idx[i]] += (
-                obj_values[sorted_idx[i+1]] - obj_values[sorted_idx[i-1]]
-            ) / obj_range
-
-    return distances
-
-
-def nsga2_select(objs, population, pop_size):
-    M, N = objs.shape
-    fronts = nondominated_sort(objs)  # 复用现有的非支配排序
-
-    chosen = []
-    for front in fronts:
-        if len(chosen) + len(front) <= pop_size:
-            # 整个前沿都能放下，全选
-            chosen.extend(front)
-        else:
-            # 最后一个前沿：需要筛选部分个体
-            remaining_slots = pop_size - len(chosen)
-
-            # 计算该前沿的拥挤度距离
-            distances = crowding_distance(front, objs)
-
-            # 按拥挤度降序排序，选择距离最大的个体（更分散）
-            sorted_indices = torch.argsort(distances, descending=True)
-            selected = [front[i] for i in sorted_indices[:remaining_slots].tolist()]
-            chosen.extend(selected)
-            break
-
-    return chosen
