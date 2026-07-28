@@ -42,6 +42,13 @@ if __name__ == '__main__':
     parser.add_argument('--mos_classifier_sparsity', type=float, default=1.0, help='Sparsity ratio for classifier layers in MOS attack guidance gradient (0.0-1.0)')
     parser.add_argument('--use_dnc_aware_mask', type=int, default=1, help='Enable DNC-aware mask when DNC defense is active (0: disabled, 1: enabled)')
     parser.add_argument('--enable_subspace_constraint', type=int, default=1, help='Enable subspace robustness constraint in MOS attack (0: disabled, 1: enabled)')
+
+    # NEW: Scoring system parameters (打分系统参数)
+    parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],
+                        help='Scoring function mapping mode for constraint evaluation (sigmoid: smooth, relu: fast, linear: piecewise)')
+    parser.add_argument('--constraint_k_sigma', type=float, default=2.0,
+                        help='Threshold coefficient for benign gradient constraint (threshold = mean + k * std, k=2.0 covers 95%% benign gradients)')
+
     meta_args = parser.parse_args()
 
     # 收集所有防御方法

@@ -1,0 +1,1117 @@
+
+import torch
+import torch.nn.functional as F
+import copy
+from .lie import vector_to_net_dict
+
+# 梯度冲突分析模块（可选导入）
+try:
+    from .gradient_conflict_analyzer import run_gradient_conflict_analysis
+    CONFLICT_ANALYZER_AVAILABLE = True
+except ImportError:
+    CONFLICT_ANALYZER_AVAILABLE = False
+
+def compute_surrogate_guidance(global_model, poison_images, target_labels, criterion_ce, args=None):
+    """
+    计算多代理损失的指导梯度（改进版：分层覆盖 + 战略稀疏化）
+    """
+    global_model.eval() # 确保在 eval 模式下计算梯度
+    global_model.zero_grad()
+
+    # 1. 前向传播
+    outputs = global_model(poison_images)
+    # ================= 探针 1：监控 Logit 量级 =================
+    max_logit = outputs.max().item()
+    min_logit = outputs.min().item()
+    print(f"\n[MOS LOG] Surrogate Outputs - Max Logit: {max_logit:.2f}, Min Logit: {min_logit:.2f}")
+    if abs(max_logit) > 100 or abs(min_logit) > 100:
+        print(f"[MOS WARNING] ⚠️ Logits 正在爆炸，即将导致 NaN！")
+    # =========================================================
+
+    # -----------------------------------------
+    # 代理目标 1：Cross Entropy (CE) - 分层战略覆盖
+    # -----------------------------------------
+    loss_ce = criterion_ce(outputs, target_labels)
+
+    # 保留计算图以便后续还能算第二个梯度的反向传播
+    loss_ce.backward(retain_graph=True)
+
+    # ============ 新方案：分层梯度稀疏化（覆盖所有层，避免 DNC 采样盲区）============
+    named = list(global_model.named_parameters())
+
+    # 策略 1：对每一层都保留梯度，但按重要性稀疏化
+    layer_groups = {}
+    for n, p in named:
+        if p.grad is None:
+            continue
+        # 按层类型分组
+        if 'conv' in n.lower():
+            group = 'conv'
+        elif 'bn' in n.lower() or 'norm' in n.lower():
+            group = 'bn'
+        elif any(k in n.lower() for k in ('fc', 'classifier', 'head', 'linear', 'dense', 'out')):
+            group = 'classifier'
+        else:
+            group = 'other'
+
+        if group not in layer_groups:
+            layer_groups[group] = []
+        layer_groups[group].append((n, p))
+
+    # 策略 2：分层稀疏化比例（从 args 读取，提供默认值）
+    conv_sparsity = getattr(args, 'mos_conv_sparsity', 0.3) if args else 0.3
+    classifier_sparsity = getattr(args, 'mos_classifier_sparsity', 1.0) if args else 1.0
+
+    sparsity_ratio = {
+        'classifier': classifier_sparsity,  # 分类器层：100% 保留（最重要）
+        'conv': conv_sparsity,              # 卷积层：30% 保留（战略覆盖，避免 DNC 采样盲区）
+        'bn': 0.1,                          # BN 层：10% 保留（低优先级）
+        'other': 0.2                        # 其他层：20% 保留
+    }
+
+    # 策略 3：TopK 稀疏化（保留每层梯度绝对值最大的 k%）
+    for group, params_list in layer_groups.items():
+        ratio = sparsity_ratio.get(group, 0.2)
+        for n, p in params_list:
+            grad_flat = p.grad.flatten()
+            k = max(int(grad_flat.numel() * ratio), 1)  # 至少保留 1 个
+            _, topk_indices = torch.topk(grad_flat.abs(), k)
+
+            # 创建稀疏掩码
+            mask = torch.zeros_like(grad_flat)
+            mask[topk_indices] = 1.0
+
+            # 应用掩码（关键：保留原始梯度的幅度信息）
+            p.grad.data = (grad_flat * mask).view_as(p.grad)
+
+    # 提取稀疏化后的 g_ce（关键：必须与 all_updates 的 flatten 方式一致）
+    def extract_gradient_vector(model, named_dict, device):
+        """从模型中提取梯度向量，包含 parameters 和 buffers"""
+        g_list = []
+        for name, tensor in model.state_dict().items():
+            if name in named_dict:
+                param = named_dict[name]
+                if param.grad is not None:
+                    g_list.append(param.grad.clone().flatten())
+                else:
+                    g_list.append(torch.zeros(tensor.numel(), device=device))
+            else:
+                g_list.append(torch.zeros(tensor.numel(), device=device))
+        return torch.cat(g_list) if g_list else torch.zeros(0, device=device)
+
+    named_dict = dict(named)
+    g_ce = extract_gradient_vector(global_model, named_dict, poison_images.device)
+    global_model.zero_grad()
+    
+    # -----------------------------------------
+    # 代理目标 2：Margin Loss (CW) - 深度破坏
+    # -----------------------------------------
+    # 参考论文中的 Marginal Loss 公式 [cite: 184]
+    # 让目标类的 logit 远大于其他所有类的最大 logit
+    correct_logits = torch.gather(outputs, 1, target_labels.unsqueeze(1)).squeeze(1)
+    
+    # 把正确类别的 logit 设为极小值，方便找出第二大的 logit
+    outputs_clone = outputs.clone()
+    outputs_clone.scatter_(1, target_labels.unsqueeze(1), -1e4)
+    max_other_logits, _ = torch.max(outputs_clone, dim=1)
+    
+    # CW Loss: 希望 max_other - correct 越大越好 (即模型错得越离谱越好)
+    loss_cw = torch.mean(torch.relu(max_other_logits - correct_logits + 20.0)) # 50.0 是 margin 余量
+    
+    loss_cw.backward()
+
+    # 提取并展平 CW 梯度
+    g_cw = extract_gradient_vector(global_model, named_dict, poison_images.device)
+    global_model.zero_grad()
+
+    return g_ce, g_cw
+
+# ============================================================================
+# 打分系统：将约束loss转换为得分
+# ============================================================================
+
+def compute_constraint_score(loss_value, threshold, mode='sigmoid'):
+    """
+    将约束loss转换为得分（核心打分函数）
+
+    设计思路：
+    - loss越小 → 得分越高（满足约束）
+    - loss接近或超过threshold → 得分降低（违反约束）
+
+    Args:
+        loss_value: 约束loss的值，shape (P,) - P个个体
+        threshold: 及格线阈值（标量或与loss_value同shape）
+        mode: 映射函数类型
+            - 'sigmoid': 平滑连续映射（默认，用户选择）
+            - 'relu': 线性反向映射
+            - 'linear': 分段线性映射
+
+    Returns:
+        score: 得分，范围[0, 1]，越高越好，shape与loss_value相同
+
+    注意：
+    - 打分系统的核心：约束不再是硬边界，而是柔性得分
+    - 可通过args.score_mode全局切换映射函数
+    - 后续若需修改打分逻辑，只需修改此函数
+    """
+    if mode == 'sigmoid':
+        # Sigmoid平滑映射（默认）
+        # 优点：平滑连续，梯度稳定，在阈值附近柔和过渡
+        # k控制陡峭度：k越大，阈值附近变化越陡峭
+        k = 5.0 / (threshold + 1e-9)
+        return torch.sigmoid(-k * (loss_value - threshold))
+
+    elif mode == 'relu':
+        # ReLU反向映射
+        # 优点：简单高效，计算快速
+        # 缺点：在阈值处不平滑，可能导致边界震荡
+        return torch.clamp((threshold - loss_value) / (threshold + 1e-9), min=0.0, max=1.0)
+
+    elif mode == 'linear':
+        # 分段线性映射
+        # 优点：结合两者，阈值内满分，之后线性衰减
+        # 适用于需要明确"及格/不及格"区分的场景
+        ratio = loss_value / (threshold + 1e-9)
+        return torch.where(
+            ratio < 1.0,
+            torch.ones_like(ratio),
+            torch.where(
+                ratio < 2.0,
+                2.0 - ratio,
+                torch.zeros_like(ratio)
+            )
+        )
+    else:
+        raise ValueError(f"Unknown score mode: {mode}. Choose from ['sigmoid', 'relu', 'linear']")
+
+# 1. 签名里增加默认的 kwargs：g_ce 和 g_cw
+def mos_attack(all_updates, args, malicious_attackers_this_round, g_ce=None, g_cw=None, historical_pop=None, lam=0.5):
+    if malicious_attackers_this_round == 0: return all_updates
+
+    device = args.device if hasattr(args, 'device') else 'cpu'
+    K = malicious_attackers_this_round
+
+    # ================= 核心修改：固定进化种群大小 =================
+    EVOLUTION_POP_SIZE = getattr(args, 'evo_pop_size', 10)  # 固定为 30 个个体
+    print(f"[MOS LOG] 🧬 进化模式：固定种群大小 = {EVOLUTION_POP_SIZE}，目标恶意客户端数 K = {K}")
+    # ============================================================
+
+    # --- 1. 数据准备与层维度记录 ---
+    all_updates_flatten = []
+    layer_dims = []  # 记录每一层在 flatten 向量中的位置
+    idx_current = 0
+    idx_w_start, idx_w_end = 0, 0
+    idx_b_start, idx_b_end = 0, 0
+    num_classes = 0
+
+    # 获取输出层的 key
+    keys = list(all_updates[0].keys())
+    out_weight_key = keys[-2]
+    out_bias_key = keys[-1]
+
+    for k, v in all_updates[0].items():
+        num_params = v.numel()
+        layer_dims.append((k, idx_current, idx_current + num_params))
+
+        # 记录输出层位置
+        if k == out_weight_key:
+            idx_w_start = idx_current
+            idx_w_end = idx_current + num_params
+            num_classes = v.shape[0]
+        elif k == out_bias_key:
+            idx_b_start = idx_current
+            idx_b_end = idx_current + num_params
+
+        idx_current += num_params
+
+    for update in all_updates:
+        vec = torch.cat([torch.flatten(update[k]) for k in update.keys()])
+        all_updates_flatten.append(vec)
+    all_stack = torch.stack(all_updates_flatten).to(device)
+    
+    
+    
+    # 提取良性梯度
+    benign_grads = all_stack[malicious_attackers_this_round:].detach()
+    # 防护：确保存在良性梯度（否则会在 torch.mean/torch.norm 等处产生 NaN）
+    if benign_grads.size(0) == 0:
+        # 没有良性客户端可参考，退化为不修改（或用小高斯噪声保持数值稳定）
+        # 返回原始 updates 和一个保守的 malicious_set（避免后续空操作）
+        noisy = torch.randn_like(all_stack[:malicious_attackers_this_round]) * 1e-6
+        for i in range(malicious_attackers_this_round):
+            all_updates[i] = vector_to_net_dict(all_stack[i] + noisy[i], copy.deepcopy(all_updates[i]))
+        return all_updates, (malicious_set.detach() if 'malicious_set' in locals() else None)
+    benign_mean = torch.mean(benign_grads, dim=0)
+    
+    # 获取约束边界 (和以前一样)
+    benign_std = torch.std(benign_grads, dim=0) + 1e-9
+    # ================= 探针 2A：监控良性梯度的反抗激烈程度 =================
+    b_mean_norm = torch.norm(benign_mean).item()
+    b_std_mean = torch.mean(benign_std).item()
+    print(f"[MOS LOG] 良性梯度范数 (Benign Mean Norm): {b_mean_norm:.4f}")
+    print(f"[MOS LOG] 良性梯度方差 (Benign STD Mean): {b_std_mean:.4f}")
+    # ====================================================================
+    dists_benign = torch.norm(benign_grads - benign_mean, dim=1)
+    krum_radius = torch.max(dists_benign) * 1.1
+    benign_min, _ = torch.min(benign_grads, dim=0)
+    benign_max, _ = torch.max(benign_grads, dim=0)
+    lower_bound = benign_min
+    upper_bound = benign_max
+    
+    # ================= 修改 2：DNC-aware 掩码（仅在 DNC 开启时使用）=================
+    def compute_dnc_sensitive_mask(benign_grads, benign_mean, device, num_samples=5):
+        """计算 DNC 敏感的维度掩码，找出在多次随机采样中都被第一主成分覆盖的维度"""
+        num_params = benign_mean.numel()
+        sensitivity_scores = torch.zeros(num_params, device=device)
+
+        for _ in range(num_samples):
+            sampled_indices = torch.randperm(num_params, device=device)[:1000]
+            benign_sub = benign_grads[:, sampled_indices]
+            benign_sub_centered = benign_sub - benign_sub.mean(dim=0)
+
+            try:
+                U, S, V = torch.linalg.svd(benign_sub_centered, full_matrices=False)
+                principal_component = V[0, :]
+                weights = principal_component.abs()
+                sensitivity_scores[sampled_indices] += weights
+            except:
+                continue
+
+        sensitivity_scores = sensitivity_scores / (num_samples + 1e-9)
+
+        # 创建掩码：保留敏感度最低的 50% 维度
+        k_dim = int(0.5 * num_params)
+        _, low_sensitivity_indices = torch.topk(sensitivity_scores, k_dim, largest=False)
+
+        dnc_stealth_mask = torch.zeros_like(benign_mean)
+        dnc_stealth_mask[low_sensitivity_indices] = 1.0
+
+        return dnc_stealth_mask, sensitivity_scores
+
+    # 检查是否启用 DNC 防御
+    defend_methods = getattr(args, 'defend_methods', [])
+    use_dnc = 'dnc' in defend_methods
+
+    if use_dnc and getattr(args, 'use_dnc_aware_mask', True):
+        # 使用 DNC-aware 掩码（针对性强）
+        survival_mask, sensitivity_scores = compute_dnc_sensitive_mask(
+            benign_grads, benign_mean, device, num_samples=5
+        )
+        print(f"[MOS LOG] DNC 模式启动 - 敏感维度占比: {(sensitivity_scores > sensitivity_scores.median()).float().mean():.2%}")
+
+    # ================= 新增：梯度冲突分析（可选）=================
+    if CONFLICT_ANALYZER_AVAILABLE and getattr(args, 'enable_conflict_analysis', False):
+        print(f"\n[MOS LOG] 🔬 启动梯度冲突分析...")
+        try:
+            _, _ = run_gradient_conflict_analysis(
+                all_updates=all_updates,
+                args=args,
+                malicious_attackers_this_round=malicious_attackers_this_round,
+                g_ce=g_ce,
+                g_cw=g_cw,
+                benign_grads=benign_grads,
+                benign_mean=benign_mean,
+                benign_std=benign_std,
+                krum_radius=krum_radius,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                survival_mask=survival_mask,
+                layer_dims=layer_dims
+            )
+        except Exception as e:
+            print(f"[MOS WARNING] 梯度冲突分析失败: {e}")
+    # ============================================================
+    else:
+        # 回退到全 1 掩码（不做限制，适用于其他防御）
+        survival_mask = torch.ones_like(benign_mean)
+        if use_dnc:
+            print(f"[MOS LOG] DNC 检测到但 DNC-aware 掩码已禁用")
+    # ============================================================================
+    
+    # ================= 关键新增区：处理传进来的指导梯度 =================
+    # 拦截 NaN 梯度，并限制最大推力
+    has_valid_guidance = (g_ce is not None and g_cw is not None and
+                          not torch.isnan(g_ce).any() and not torch.isinf(g_ce).any() and
+                          not torch.isnan(g_cw).any() and not torch.isinf(g_cw).any())
+
+    if has_valid_guidance:
+        
+        b_norm = torch.norm(benign_mean)
+        #scale_factor = min(float(b_norm * 1), 5000.0) 
+        # 将原本可能的 5000.0 限制死
+        #scale_factor = min(float(b_norm * 1.0), float(b_norm * 2.0))
+        min_attack_scale = 1.0  # 可以根据实际情况微调
+        scale_factor = max(float(krum_radius * 0.3), min_attack_scale)
+        
+        g_ce_unit = g_ce.to(device) / (torch.norm(g_ce.to(device)) + 1e-9)
+        g_cw_unit = g_cw.to(device) / (torch.norm(g_cw.to(device)) + 1e-9)
+        
+        
+        # 合并目标向量（由参数 lam 控制 CE 与 CW 的配比），并归一化为 unit 向量
+        lam = float(lam)
+        g_combined = lam * g_ce_unit + (1.0 - lam) * g_cw_unit
+        g_combined_unit = g_combined / (torch.norm(g_combined) + 1e-9)
+
+        target_ce = benign_mean + scale_factor * g_ce_unit
+        target_cw = benign_mean + scale_factor * g_cw_unit
+    else:
+        # 安全回退策略：检测异常并输出诊断信息
+        warnings = []
+        if g_ce is None: warnings.append("g_ce为空")
+        if g_cw is None: warnings.append("g_cw为空")
+        if g_ce is not None and torch.isnan(g_ce).any(): warnings.append("g_ce为nan")
+        if g_cw is not None and torch.isnan(g_cw).any(): warnings.append("g_cw为nan")
+        if g_ce is not None and torch.isinf(g_ce).any(): warnings.append("g_ce为inf")
+        if g_cw is not None and torch.isinf(g_cw).any(): warnings.append("g_cw为inf")
+
+        print(f"[MOS WARNING] ⚠️ 检测到代理梯度异常，启动安全回退策略！({', '.join(warnings)})")
+
+        target_ce = benign_mean
+        target_cw = benign_mean
+
+        # 【填补黑洞】：给一个长度为安全半径 10%、方向与良性均值相同的推力
+        safe_spark = krum_radius * 0.1
+        benign_dir = benign_mean / (torch.norm(benign_mean) + 1e-9)
+
+        g_ce_unit = benign_dir * safe_spark
+        g_cw_unit = benign_dir * safe_spark
+        g_combined_unit = benign_dir * safe_spark
+
+    target_ce = target_ce.detach()
+    target_cw = target_cw.detach()
+
+    # ============================================================================
+    # 预计算良性参考系统（循环外抽离，避免每代重复计算）
+    # ============================================================================
+
+    print(f"\n[MOS LOG] 🔧 开始预计算良性参考系统...")
+
+    # 1. PCA主成分预计算（用于后续约束评分）
+    pca_principal_dirs = None
+    pca_benign_proj_std = None
+
+    if use_dnc:
+        try:
+            benign_centered = benign_grads - benign_mean
+            U, S, V = torch.linalg.svd(benign_centered, full_matrices=False)
+            num_principal_components = min(5, V.shape[0])
+            pca_principal_dirs = V[:num_principal_components, :].detach()
+
+            # 计算良性梯度在主成分上的投影标准差（用于归一化）
+            benign_projections = torch.matmul(benign_centered, pca_principal_dirs.T)
+            pca_benign_proj_std = benign_projections.std(dim=0) + 1e-9
+
+            print(f"[MOS LOG]   ✓ PCA主成分提取完成，保留前{num_principal_components}个主成分")
+        except Exception as e:
+            print(f"[MOS WARNING]   ✗ PCA预计算失败: {e}，将跳过PCA约束")
+            pca_principal_dirs = None
+
+    # 2. 子空间采样预计算（用于DNC子空间鲁棒性约束）
+    subspace_samples = []
+    enable_subspace = use_dnc and getattr(args, 'enable_subspace_constraint', True)
+
+    if enable_subspace:
+        num_subspace_samples = 3
+        for sample_idx in range(num_subspace_samples):
+            try:
+                sampled_dims = torch.randperm(benign_mean.numel(), device=device)[:1000]
+                benign_sub = benign_grads[:, sampled_dims]
+                benign_sub_mean = benign_sub.mean(dim=0)
+                benign_sub_centered = benign_sub - benign_sub_mean
+
+                _, _, V_sub = torch.linalg.svd(benign_sub_centered, full_matrices=False)
+                v_sub = V_sub[0, :].detach()
+
+                # 计算良性梯度在该子空间主成分上的投影标准差
+                benign_sub_scores = torch.abs((benign_sub_centered @ v_sub))
+                benign_sub_std = benign_sub_scores.std() + 1e-9
+
+                subspace_samples.append({
+                    'sampled_dims': sampled_dims,
+                    'principal_component': v_sub,
+                    'sub_mean': benign_sub_mean,
+                    'benign_std': benign_sub_std
+                })
+            except Exception as e:
+                print(f"[MOS WARNING]   ✗ 子空间样本{sample_idx}预计算失败: {e}")
+                continue
+
+        if subspace_samples:
+            print(f"[MOS LOG]   ✓ 子空间采样完成，成功预计算{len(subspace_samples)}个子空间")
+        else:
+            enable_subspace = False
+
+    # 3. 计算良性梯度的约束loss阈值（打分系统的"及格线"）
+    print(f"[MOS LOG]   🎯 计算良性梯度约束loss阈值...")
+
+    # 获取超参数
+    constraint_k_sigma = getattr(args, 'constraint_k_sigma', 2.0)  # 默认2.0（覆盖95%）
+
+    # 将良性梯度作为"样本"，计算每个约束loss的分布
+    with torch.no_grad():
+        # Krum约束
+        benign_dists_from_mean = torch.norm(benign_grads - benign_mean, dim=1)
+        krum_loss_mean = benign_dists_from_mean.mean()
+        krum_loss_std = benign_dists_from_mean.std() + 1e-9
+        threshold_krum = krum_loss_mean + constraint_k_sigma * krum_loss_std
+
+        # Box约束（越界范数）
+        excess_lower_benign = torch.relu(lower_bound - benign_grads)
+        excess_upper_benign = torch.relu(benign_grads - upper_bound)
+        box_loss_benign = torch.norm(excess_lower_benign + excess_upper_benign, dim=1)
+        box_loss_mean = box_loss_benign.mean()
+        box_loss_std = box_loss_benign.std() + 1e-9
+        threshold_box = box_loss_mean + constraint_k_sigma * box_loss_std
+
+        # 符号一致性约束（逐层）
+        sign_loss_list = []
+        for _, start_idx, end_idx in layer_dims:
+            ben_layer = benign_grads[:, start_idx:end_idx]
+            ben_layer_mean = benign_mean[start_idx:end_idx]
+            sign_violation = -ben_layer * torch.sign(ben_layer_mean).unsqueeze(0)
+            layer_sign_loss = torch.norm(torch.relu(sign_violation), dim=1)
+            sign_loss_list.append(layer_sign_loss)
+        sign_loss_benign = torch.stack(sign_loss_list).max(dim=0)[0]
+        sign_loss_mean = sign_loss_benign.mean()
+        sign_loss_std = sign_loss_benign.std() + 1e-9
+        threshold_sign = sign_loss_mean + constraint_k_sigma * sign_loss_std
+
+        # PCA约束
+        threshold_pca = 0.0
+        if pca_principal_dirs is not None:
+            benign_deviation = benign_grads - benign_mean
+            projections = torch.matmul(benign_deviation, pca_principal_dirs.T)
+            weights = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1], device=device)[:pca_principal_dirs.shape[0]]
+            pca_loss_benign = torch.sum(projections.abs() * weights, dim=1)
+            pca_loss_mean = pca_loss_benign.mean()
+            pca_loss_std = pca_loss_benign.std() + 1e-9
+            threshold_pca = pca_loss_mean + constraint_k_sigma * pca_loss_std
+
+        # 子空间约束
+        threshold_subspace = 0.0
+        if enable_subspace and subspace_samples:
+            subspace_loss_list = []
+            for sample in subspace_samples:
+                benign_sub = benign_grads[:, sample['sampled_dims']]
+                benign_sub_deviation = benign_sub - sample['sub_mean']
+                sub_scores = (benign_sub_deviation @ sample['principal_component']).abs()
+                subspace_loss_list.append(sub_scores)
+            subspace_loss_benign = torch.stack(subspace_loss_list).max(dim=0)[0]
+            subspace_loss_mean = subspace_loss_benign.mean()
+            subspace_loss_std = subspace_loss_benign.std() + 1e-9
+            threshold_subspace = subspace_loss_mean + constraint_k_sigma * subspace_loss_std
+
+        # 群体聚类约束
+        malicious_mean_benign = benign_mean  # 良性梯度的"群体中心"就是均值
+        group_loss_benign = torch.norm(benign_grads - malicious_mean_benign, dim=1)
+        group_loss_mean = group_loss_benign.mean()
+        group_loss_std = group_loss_benign.std() + 1e-9
+        threshold_group = group_loss_mean + constraint_k_sigma * group_loss_std
+
+    # 打包阈值字典
+    constraint_thresholds = {
+        'krum': threshold_krum,
+        'box': threshold_box,
+        'sign': threshold_sign,
+        'pca': threshold_pca,
+        'subspace': threshold_subspace,
+        'group': threshold_group
+    }
+
+    # 打印阈值信息
+    print(f"[MOS LOG]   📊 约束阈值（k={constraint_k_sigma}）:")
+    print(f"[MOS LOG]      - Krum: {threshold_krum:.4f}")
+    print(f"[MOS LOG]      - Box: {threshold_box:.4f}")
+    print(f"[MOS LOG]      - Sign: {threshold_sign:.4f}")
+    if use_dnc:
+        print(f"[MOS LOG]      - PCA: {threshold_pca:.4f}")
+        if enable_subspace:
+            print(f"[MOS LOG]      - Subspace: {threshold_subspace:.4f}")
+    print(f"[MOS LOG]      - Group: {threshold_group:.4f}")
+
+    # 4. 打包良性参考数据（传递给compute_objectives）
+    benign_refs = {
+        'mean': benign_mean,
+        'std': benign_std,
+        'grads': benign_grads,
+        'krum_radius': krum_radius,
+        'lower_bound': lower_bound,
+        'upper_bound': upper_bound,
+        'survival_mask': survival_mask,
+        'layer_dims': layer_dims,
+        'pca_principal_dirs': pca_principal_dirs,
+        'pca_benign_proj_std': pca_benign_proj_std,
+        'subspace_samples': subspace_samples,
+        'use_dnc': use_dnc,
+        'device': device
+    }
+
+    print(f"[MOS LOG] ✅ 良性参考系统预计算完成！\n")
+    # ============================================================================
+
+    target_ce = target_ce.detach()
+    target_cw = target_cw.detach()
+
+    # ================= 修改：初始化固定大小的进化种群 =================
+    # 使用 EVOLUTION_POP_SIZE 个个体进行进化，而不是 K 个
+    if historical_pop is not None:
+        historical_pop = historical_pop.to(device)
+        hist_P = historical_pop.shape[0]
+
+        # 适配到固定种群大小
+        if hist_P == EVOLUTION_POP_SIZE:
+            evolution_pop = historical_pop
+        elif hist_P > EVOLUTION_POP_SIZE:
+            evolution_pop = historical_pop[:EVOLUTION_POP_SIZE]
+        else:
+            indices = torch.randint(0, hist_P, (EVOLUTION_POP_SIZE - hist_P,), device=device)
+            extra_pop = historical_pop[indices]
+            evolution_pop = torch.cat([historical_pop, extra_pop], dim=0)
+
+        # 紧箍咒：限制历史记忆的幅度
+        hist_norms = torch.norm(evolution_pop, dim=1, keepdim=True)
+        max_allowed_hist = krum_radius * 3
+        shrink_factor = torch.clamp(max_allowed_hist / (hist_norms + 1e-9), max=1.0)
+        evolution_pop = evolution_pop * shrink_factor
+
+        # 衰减系数
+        decay_factor = 0.95
+        evolution_pop = benign_mean + (evolution_pop - benign_mean) * decay_factor + \
+                        torch.randn(EVOLUTION_POP_SIZE, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
+    else:
+        # 第一轮：初始化固定大小的进化种群
+        evolution_pop = benign_mean.clone().detach().repeat(EVOLUTION_POP_SIZE, 1) + \
+                        torch.randn(EVOLUTION_POP_SIZE, benign_mean.shape[0]).to(device) * (0.01 * benign_std)
+
+    # 【精英种子注入】：将前几个个体替换为沿指导方向的精英
+    if g_ce is not None and g_cw is not None:
+        if EVOLUTION_POP_SIZE >= 1:
+            evolution_pop[0] = target_ce  # 极致的 CE 破坏者
+        if EVOLUTION_POP_SIZE >= 2:
+            evolution_pop[1] = target_cw  # 极致的 CW 破坏者
+        if EVOLUTION_POP_SIZE >= 3:
+            # 沿着混合方向的破坏者
+            scale_factor = krum_radius * 0.95
+            evolution_pop[2] = benign_mean + scale_factor * g_combined_unit
+
+    # 用于进化的种群（固定大小）
+    malicious_set = evolution_pop
+
+    # ============================================================================
+    # 进化参数配置
+    # ============================================================================
+
+    # 进化参数
+    generations = getattr(args, 'nsga_generations', 100)
+    mutation_sigma = min(float(0.02 * torch.norm(upper_bound - lower_bound)), 1.0)
+    if mutation_sigma <= 1e-12:
+        mutation_sigma = 1e-6
+
+    # 引入 archive 作为跨代记忆（使用固定种群大小）
+    archive = malicious_set.clone().detach()
+    archive_size = EVOLUTION_POP_SIZE
+
+    # 最大允许偏移阈值
+    max_dev_threshold = getattr(args, 'max_dev_threshold', 10000.0)
+    large_norm_penalty_coeff = getattr(args, 'large_norm_penalty_coeff', 1e3)
+
+    # 获取打分系统配置
+    score_mode = getattr(args, 'score_mode', 'sigmoid')  # 默认sigmoid（用户选择）
+    constraint_k_sigma = getattr(args, 'constraint_k_sigma', 2.0)  # 阈值系数
+
+
+    # 获取打分系统配置
+    score_mode = getattr(args, 'score_mode', 'sigmoid')  # 默认sigmoid
+    constraint_k_sigma = getattr(args, 'constraint_k_sigma', 2.0)  # 阈值系数（已在预计算中使用）
+
+    # 方向性变异强度（保留占位符）
+    dir_scale = getattr(args, 'dir_scale', 0.0)
+
+    print(f"\n[MOS LOG] 🧬 开始进化循环，代数={generations}，种群大小={EVOLUTION_POP_SIZE}")
+    print(f"[MOS LOG] 📊 打分系统：{score_mode}映射，阈值系数k={constraint_k_sigma}")
+
+    print(f"[MOS LOG] 🧬 开始进化循环，代数={generations}，种群大小={EVOLUTION_POP_SIZE}")
+    print(f"[MOS LOG] 📊 打分系统：{score_mode}映射，阈值系数k={constraint_k_sigma}")
+
+    for it in range(generations):
+
+def crowding_distance(front_indices, objs):
+    """
+    计算拥挤度距离（NSGA-II核心组件）
+
+    目的：在同一非支配前沿中，优先保留分布更分散的个体，避免解集聚集
+
+    Args:
+        front_indices: 前沿中的个体索引列表 (长度F)
+        objs: (M, N) 目标矩阵，M个目标，N个个体
+
+    Returns:
+        distances: (F,) 每个个体的拥挤度距离，越大表示周围越空旷
+
+    算法：
+    1. 对每个目标维度，按该目标值排序
+    2. 边界点（最大、最小）距离设为无穷大（必选）
+    3. 中间点距离 = 左右邻居的目标值差 / 目标值范围
+    4. 累加所有目标维度的距离
+    """
+    M, _ = objs.shape
+    F = len(front_indices)
+    distances = torch.zeros(F, device=objs.device)
+
+    # 边界情况：只有1-2个个体，全部保留
+    if F <= 2:
+        return torch.full((F,), float('inf'), device=objs.device)
+
+    # 对每个目标维度计算拥挤度
+    for m in range(M):
+        # 提取该前沿在第m个目标上的值
+        obj_values = objs[m, front_indices]
+        sorted_idx = torch.argsort(obj_values)
+
+        # 边界点设为无穷大（保证Pareto前沿的极值点被保留）
+        distances[sorted_idx[0]] = float('inf')
+        distances[sorted_idx[-1]] = float('inf')
+
+        # 计算目标范围（归一化用）
+        obj_range = obj_values[sorted_idx[-1]] - obj_values[sorted_idx[0]]
+        if obj_range < 1e-9:
+            continue  # 该目标维度无差异，跳过
+
+        # 中间点：距离 = (右邻居 - 左邻居) / 范围
+        for i in range(1, F - 1):
+            distances[sorted_idx[i]] += (
+                obj_values[sorted_idx[i+1]] - obj_values[sorted_idx[i-1]]
+            ) / obj_range
+
+    return distances
+
+
+def nsga2_select(objs, population, pop_size):
+    """
+    NSGA-II 选择机制：非支配排序 + 拥挤度距离（替代NSGA-III）
+
+    为什么退化为NSGA-II：
+    - 目标数从5-7个减少为2个（识别率 + 破坏性）
+    - NSGA-III的参考方向机制针对3+目标设计，双目标时冗余
+    - NSGA-II的拥挤度距离在双目标上更高效、更直观
+
+    Args:
+        objs: (M, N) 目标矩阵，M=2（识别率、破坏性），N个个体
+        population: (N, D) 种群（未使用，保留接口兼容性）
+        pop_size: 目标种群大小
+
+    Returns:
+        chosen: 选中的个体索引列表（长度=pop_size）
+
+    算法流程：
+    1. 非支配排序：将种群分为多个前沿（Front 0, 1, 2, ...）
+    2. 按前沿顺序填充：优先选择Front 0，再Front 1，...
+    3. 最后一个前沿放不下时，使用拥挤度距离筛选
+    """
+    M, N = objs.shape
+    fronts = nondominated_sort(objs)  # 复用现有的非支配排序
+
+    chosen = []
+    for front in fronts:
+        if len(chosen) + len(front) <= pop_size:
+            # 整个前沿都能放下，全选
+            chosen.extend(front)
+        else:
+            # 最后一个前沿：需要筛选部分个体
+            remaining_slots = pop_size - len(chosen)
+
+            # 计算该前沿的拥挤度距离
+            distances = crowding_distance(front, objs)
+
+            # 按拥挤度降序排序，选择距离最大的个体（更分散）
+            sorted_indices = torch.argsort(distances, descending=True)
+            selected = [front[i] for i in sorted_indices[:remaining_slots].tolist()]
+            chosen.extend(selected)
+            break
+
+    return chosen
+
+
+def compute_objectives(pop, benign_refs, constraint_thresholds, g_combined_unit, score_mode='sigmoid'):
+    """
+    计算双目标：识别率得分 + 破坏性损失（打分系统核心）
+
+    这是新架构的核心：将5-7个约束性目标简化为单一"识别率"得分
+
+    Args:
+        pop: 种群 (P, D) - P个个体，D维梯度向量
+        benign_refs: 预计算的良性参考数据字典
+        constraint_thresholds: 每个约束的阈值字典
+        g_combined_unit: 合并的指导梯度单位向量 (D,)
+        score_mode: 打分映射函数类型 ('sigmoid', 'relu', 'linear')
+
+    Returns:
+        objectives: (2, P) - 双目标矩阵
+            - objectives[0]: 识别率目标（负得分，最小化 = 最大化得分）
+            - objectives[1]: 破坏性目标（负对齐度，最小化 = 最大化破坏性）
+        constraint_scores: 各约束的得分字典（用于诊断）
+        constraint_losses: 各约束的loss字典（用于诊断）
+    """
+    P = pop.shape[0]
+    device = benign_refs['device']
+
+    benign_mean = benign_refs['mean']
+    benign_std = benign_refs['std']
+    benign_grads = benign_refs['grads']
+    krum_radius = benign_refs['krum_radius']
+    lower_bound = benign_refs['lower_bound']
+    upper_bound = benign_refs['upper_bound']
+    survival_mask = benign_refs['survival_mask']
+    layer_dims = benign_refs['layer_dims']
+    use_dnc = benign_refs['use_dnc']
+
+    # ========================================================================
+    # Step 1: 计算所有约束loss（保持原有计算逻辑）
+    # ========================================================================
+
+    constraint_losses = {}
+
+    # 1.1 Krum半径约束
+    current_dist = torch.norm(pop - benign_mean, dim=1)
+    excess_dist = torch.relu(current_dist - krum_radius)
+    constraint_losses['krum'] = excess_dist ** 2
+
+    # 1.2 Box边界约束
+    excess_lower = torch.relu(lower_bound - pop)
+    excess_upper = torch.relu(pop - upper_bound)
+    constraint_losses['box'] = torch.norm(excess_lower + excess_upper, dim=1)
+
+    # 1.3 符号一致性约束（逐层）
+    l_sign_layer_max = torch.zeros(P, device=device)
+    for _, start_idx, end_idx in layer_dims:
+        mal_layer = pop[:, start_idx:end_idx]
+        ben_layer_mean = benign_mean[start_idx:end_idx]
+        sign_violation = -mal_layer * torch.sign(ben_layer_mean).unsqueeze(0)
+        layer_sign_loss = torch.norm(torch.relu(sign_violation), dim=1)
+        l_sign_layer_max = torch.max(l_sign_layer_max, layer_sign_loss)
+    constraint_losses['sign'] = l_sign_layer_max
+
+    # 1.4 PCA主成分约束
+    if use_dnc and benign_refs['pca_principal_dirs'] is not None:
+        pca_principal_dirs = benign_refs['pca_principal_dirs']
+        pca_benign_proj_std = benign_refs['pca_benign_proj_std']
+
+        mal_deviation = pop - benign_mean
+        projections = torch.matmul(mal_deviation, pca_principal_dirs.T)
+
+        num_components = pca_principal_dirs.shape[0]
+        weights = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1], device=device)[:num_components]
+        l_pca_projection = torch.sum(projections.abs() * weights, dim=1)
+
+        # 使用预计算的良性投影标准差归一化
+        l_pca_normalized = l_pca_projection / (pca_benign_proj_std * weights).sum()
+        constraint_losses['pca'] = l_pca_normalized
+    else:
+        constraint_losses['pca'] = torch.zeros(P, device=device)
+
+    # 1.5 子空间鲁棒性约束
+    if use_dnc and benign_refs['subspace_samples']:
+        l_subspace_max = torch.zeros(P, device=device)
+
+        for sample in benign_refs['subspace_samples']:
+            mal_sub = pop[:, sample['sampled_dims']]
+            mal_sub_deviation = mal_sub - sample['sub_mean']
+            sub_scores = (mal_sub_deviation @ sample['principal_component']).abs()
+
+            # 使用预计算的良性标准差归一化
+            sub_scores_normalized = sub_scores / sample['benign_std']
+            l_subspace_max = torch.max(l_subspace_max, sub_scores_normalized)
+
+        constraint_losses['subspace'] = l_subspace_max
+    else:
+        constraint_losses['subspace'] = torch.zeros(P, device=device)
+
+    # 1.6 群体聚类约束
+    malicious_mean = torch.mean(pop, dim=0)
+    constraint_losses['group'] = torch.norm(pop - malicious_mean, dim=1)
+
+    # ========================================================================
+    # Step 2: 将每个约束loss转换为得分（打分系统核心）
+    # ========================================================================
+
+    constraint_scores = {}
+    for name, loss in constraint_losses.items():
+        threshold = constraint_thresholds[name]
+        constraint_scores[name] = compute_constraint_score(loss, threshold, score_mode)
+
+    # ========================================================================
+    # Step 3: 加权求和得到总识别率得分
+    # ========================================================================
+
+    # 约束权重（可通过args配置，默认均等）
+    weights = {
+        'krum': 1.0,
+        'box': 1.0,
+        'sign': 1.0,
+        'pca': 1.0,
+        'subspace': 1.0,
+        'group': 0.5  # 群体约束权重较低（次要约束）
+    }
+
+    total_score = torch.zeros(P, device=device)
+    total_weight = 0.0
+
+    for name, score in constraint_scores.items():
+        weight = weights.get(name, 1.0)
+        total_score += score * weight
+        total_weight += weight
+
+    # 归一化到[0, 1]
+    recognition_score = total_score / (total_weight + 1e-9)
+
+    # ========================================================================
+    # Step 4: 计算破坏性目标（与指导梯度的对齐度）
+    # ========================================================================
+
+    deviation = pop - benign_mean
+    masked_deviation = deviation * survival_mask.unsqueeze(0)
+
+    # 对齐度：与指导梯度的点积（越大越好）
+    alignment = torch.sum(masked_deviation * g_combined_unit.unsqueeze(0), dim=1)
+
+    # ========================================================================
+    # Step 5: 返回双目标（都转换为最小化问题）
+    # ========================================================================
+
+    # 目标1：识别率（负号转换：最大化得分 → 最小化负得分）
+    obj_recognition = -recognition_score
+
+    # 目标2：破坏性（负号转换：最大化对齐 → 最小化负对齐）
+    obj_destructiveness = -alignment
+
+    objectives = torch.stack([obj_recognition, obj_destructiveness], dim=0)
+
+    return objectives, constraint_scores, constraint_losses
+
+
+# ------ 非支配排序（NSGA-II 和 NSGA-III 共用）------
+def nondominated_sort(objs):
+    """
+    非支配排序（Pareto前沿划分）
+
+    将种群划分为多个非支配前沿：
+    - Front 0: 没有任何个体支配的个体（Pareto最优）
+    - Front 1: 仅被Front 0支配的个体
+    - ...
+
+    Args:
+        objs: (M, N) 目标矩阵
+
+    Returns:
+        fronts: 列表的列表，每个子列表是一个前沿的个体索引
+    """
+    M, N = objs.shape
+    S = [set() for _ in range(N)]  # 每个个体支配的个体集合
+    n = torch.zeros(N, dtype=torch.int32, device=objs.device)  # 支配该个体的个体数
+    rank = torch.full((N,), -1, dtype=torch.int32, device=objs.device)
+    fronts = []
+
+    # 计算支配关系
+    for p in range(N):
+        for q in range(N):
+            if p == q:
+                continue
+            # p支配q？（所有目标不差，至少一个目标更优）
+            less_eq = torch.all(objs[:, p] <= objs[:, q])
+            strictly_less = torch.any(objs[:, p] < objs[:, q])
+            if less_eq and strictly_less:
+                S[p].add(q)  # p支配q
+            elif torch.all(objs[:, q] <= objs[:, p]) and torch.any(objs[:, q] < objs[:, p]):
+                n[p] += 1  # q支配p
+
+        # 没有被支配的个体属于Front 0
+        if n[p] == 0:
+            rank[p] = 0
+
+    # Front 0
+    current_front = [i for i in range(N) if rank[i] == 0]
+    i = 0
+
+    # 逐层构建后续前沿
+    while current_front:
+        fronts.append(current_front)
+        next_front = []
+        for p in current_front:
+            for q in S[p]:
+                n[q] -= 1
+                if n[q] == 0:
+                    rank[q] = i + 1
+                    next_front.append(q)
+        i += 1
+        current_front = next_front
+
+    return fronts
+
+
+# ============================================================================
+# NSGA-II 选择机制：替代 NSGA-III（双目标优化专用）
+# ============================================================================
+
+def crowding_distance(front_indices, objs):
+            malicious_set,
+            benign_refs,
+            constraint_thresholds,
+            g_combined_unit,
+            score_mode=score_mode
+        )
+
+        # 选择父代（NSGA-II选择）
+        parent_idx = nsga2_select(objectives_current, malicious_set, EVOLUTION_POP_SIZE)
+        parents = malicious_set[parent_idx]
+
+        # 生成子代：使用 SBX（Simulated Binary Crossover）+ 生存掩码位置上的小幅高斯突变
+        num_children = EVOLUTION_POP_SIZE
+        perm = torch.randperm(EVOLUTION_POP_SIZE)
+        children = []
+        crossover_prob = getattr(args, 'sbx_crossover_prob', 0.9)
+        eta = float(getattr(args, 'sbx_eta', 15.0))
+        for i in range(0, num_children, 2):
+            p1 = parents[perm[i % EVOLUTION_POP_SIZE]]
+            p2 = parents[perm[(i+1) % EVOLUTION_POP_SIZE]]
+            D = p1.numel()
+            # SBX per-dimension
+            u = torch.rand(D, device=device)
+            mask = torch.rand(D, device=device) <= crossover_prob
+            beta = torch.empty(D, device=device)
+            le = u <= 0.5
+            beta[le] = (2.0 * u[le]) ** (1.0 / (eta + 1.0))
+            beta[~le] = (1.0 / (2.0 * (1.0 - u[~le]))) ** (1.0 / (eta + 1.0))
+            child1 = 0.5 * ((1 + beta) * p1 + (1 - beta) * p2)
+            child2 = 0.5 * ((1 - beta) * p1 + (1 + beta) * p2)
+            # 如果该维度不做交叉，则直接拷贝父本对应值
+            child1[~mask] = p1[~mask]
+            child2[~mask] = p2[~mask]
+
+            # 只在 survival_mask 指示的位置上加入小幅高斯突变
+            noise1 = torch.randn_like(child1) * mutation_sigma
+            noise2 = torch.randn_like(child2) * mutation_sigma
+            dir_step = 0.05 * krum_radius 
+            
+            # 让子代不仅有随机突变，还顺着指导梯度往前走一步
+            if g_combined_unit is not None:
+                directional_push = dir_step * g_combined_unit
+                # 为了维持多样性，可以对推力也加一点随机性（例如 0.5 到 1.5 倍的力度）
+                push_scale1 = torch.empty(1).uniform_(0.5, 1.5).item()
+                push_scale2 = torch.empty(1).uniform_(0.5, 1.5).item()
+                
+                noise1 = noise1 + directional_push * push_scale1
+                noise2 = noise2 + directional_push * push_scale2
+            noise1 = noise1 * survival_mask
+            noise2 = noise2 * survival_mask
+            child1 = child1 + noise1
+            child2 = child2 + noise2
+
+            children.append(child1)
+            children.append(child2)
+        offspring = torch.stack(children)[:EVOLUTION_POP_SIZE]
+
+        # 合并：当前、子代、以及 archive（跨代记忆）
+        combined = torch.cat([malicious_set, offspring, archive], dim=0)
+        objectives_combined, _, _ = compute_objectives(
+            combined,
+            benign_refs,
+            constraint_thresholds,
+            g_combined_unit,
+            score_mode=score_mode
+        )
+
+        # 从 combined 中选择下一代（NSGA-II选择）
+        selected_idx = nsga2_select(objectives_combined, combined, EVOLUTION_POP_SIZE)
+        malicious_set = combined[selected_idx].clone().detach()
+        
+        # ================= 新策略：基于固定阈值的检测与强制收缩 =================
+        # 使用 max_dev_threshold（上面定义）作为硬阈值：如果某个恶意向量超过阈值则等比例缩小
+        deviation = malicious_set - benign_mean
+        dev_norms = torch.norm(deviation, dim=1, keepdim=True)
+
+        # 对超过阈值的个体进行等比例收缩到阈值以内，阈值由 args.max_dev_threshold 控制
+        scales = torch.clamp(max_dev_threshold / (dev_norms + 1e-9), max=1.0)
+        deviation = deviation * scales
+        malicious_set = benign_mean + deviation
+
+        # 更新 archive：保留 combined 的非支配前沿，最多 archive_size
+        fronts = nondominated_sort(objectives_combined)
+        new_archive_idx = []
+        for f in fronts:
+            for idx in f:
+                new_archive_idx.append(idx)
+                if len(new_archive_idx) >= archive_size:
+                    break
+            if len(new_archive_idx) >= archive_size:
+                break
+        archive = combined[new_archive_idx].clone().detach() if new_archive_idx else archive
+
+        # 每10代打印一次进度
+        if (it + 1) % 10 == 0 or it == 0:
+            avg_recognition = -objectives_current[0].mean().item()  # 负号还原
+            avg_destructiveness = -objectives_current[1].mean().item()
+            print(f"[MOS LOG]   Generation {it+1}/{generations}: "
+                  f"识别率={avg_recognition:.3f}, 破坏性={avg_destructiveness:.3f}")
+
+        # 每10代打印一次进度
+        if (it + 1) % 10 == 0 or it == 0:
+            avg_recognition = -objectives_current[0].mean().item()  # 负号还原
+            avg_destructiveness = -objectives_current[1].mean().item()
+            print(f"[MOS LOG]   Generation {it+1}/{generations}: "
+                  f"识别率={avg_recognition:.3f}, 破坏性={avg_destructiveness:.3f}")
+
+    # ================= 核心修改：选出最优模板并复制 K 份 =================
+    # 进化完成后，从最终的 malicious_set 中选出排名第一的最优个体作为模板
+    final_objectives, final_scores, final_losses = compute_objectives(
+        malicious_set,
+        benign_refs,
+        constraint_thresholds,
+        g_combined_unit,
+        score_mode=score_mode
+    )
+
+    # 使用非支配排序选出最优个体
+    final_fronts = nondominated_sort(final_objectives)
+    best_idx = final_fronts[0][0]  # 第一个前沿的第一个个体
+    best_template = malicious_set[best_idx].clone().detach()
+
+    print(f"\n[MOS LOG] 🏆 进化完成！最优模板索引: {best_idx}")
+    print(f"[MOS LOG]   最优个体识别率得分: {-final_objectives[0, best_idx].item():.3f}")
+    print(f"[MOS LOG]   最优个体破坏性: {-final_objectives[1, best_idx].item():.3f}")
+    print(f"[MOS LOG] 📋 将最优模板复制 {K} 份并添加微小噪声以规避聚类检测...")
+
+    # 复制 K 份并添加极微小的高斯噪声（避免完全一致被 DNC/Krum 识破）
+    noise_scale = getattr(args, 'template_noise_scale', 1e-4)  # 默认 1e-4，可通过 args 调整
+    optimized_grads = best_template.unsqueeze(0).repeat(K, 1)  # 复制 K 份
+
+    # 添加微小的、不同的高斯噪声到每一份
+    noise = torch.randn(K, best_template.shape[0], device=device) * noise_scale * benign_std
+    optimized_grads = optimized_grads + noise
+
+    print(f"[MOS LOG] 🔊 噪声强度: {noise_scale} * benign_std")
+    print(f"[MOS LOG] 🔊 实际噪声范数范围: [{torch.norm(noise, dim=1).min().item():.6f}, {torch.norm(noise, dim=1).max().item():.6f}]")
+    # ================================================================
+    for i in range(K):
+        all_updates[i] = vector_to_net_dict(optimized_grads[i], copy.deepcopy(all_updates[i]))
+
+    # ================= 探针 3：监控最终扰动 =================
+    # 这里保存的是最优模板的扰动（用于下一轮的 historical_pop）
+    # 注意：我们只保存模板本身，而不是 K 份副本
+    historical_perturbation = (best_template - benign_mean).unsqueeze(0).detach()  # shape: (1, D)
+    pert_norm = torch.norm(historical_perturbation).item()
+    print(f"[MOS LOG] 最优模板扰动范数 (Template Perturbation Norm): {pert_norm:.4f}")
+
+    # 监控最终输出的 K 个恶意梯度的统计信息
+    output_deviations = optimized_grads - benign_mean
+    output_norms = torch.norm(output_deviations, dim=1)
+    print(f"[MOS LOG] K={K} 个输出梯度的范数: min={output_norms.min().item():.4f}, max={output_norms.max().item():.4f}, mean={output_norms.mean().item():.4f}")
+    print("-" * 50)
+
+    return all_updates, historical_perturbation
+
+
+"""
+print(f"DEBUG: Final Attack Norm: {atk_norm:.2f} (Target < {ben_norm + krum_radius:.2f})")
+        print(f"DEBUG: Norm Losses -> Attack:{score_per_obj[0]:.3f} | Krum:{score_per_obj[1]:.3f} | Box:{score_per_obj[2]:.3f}")
+        print(f"DEBUG: Attack Mean Norm: {torch.norm(torch.mean(optimized_grads, 0)):.4f} | Benign Mean Norm: {torch.norm(benign_mean):.4f}")
+    """
