@@ -1,32 +1,180 @@
-"""
-MOS-Attack (Multi-Objective Stealth Attack) - Simplified Paper Version
-
-This is a clean, paper-ready implementation focusing on:
-- Dual-objective NSGA-II optimization
-- Two core constraints: Radial + Layer-normalized Sign
-- Clear, interpretable constraint scoring
-- Minimal feature set for reproducibility
-
-For experimental features, see mos_experimental.py
+﻿"""
+MOS-Attack: Multi-Objective Stealth Attack with NSGA-II optimization.
+Core constraints: Radial distance + Layer-normalized Sign.
 """
 
 import torch
-import torch.nn.functional as F
 import copy
 from .lie import vector_to_net_dict
 from typing import Dict, List, Tuple, Optional
 
 
-# ============================================================================
+# ========================================================================
 # Type Annotations
-# ============================================================================
+# ========================================================================
 TensorDict = Dict[str, torch.Tensor]
 LayerDims = List[Tuple[str, int, int]]
 
+# Lightweight stability state shared across consecutive federated rounds.
+# Tensors are always detached; incompatible model dimensions reset the state.
+_LAST_VALID_GUIDANCE: Optional[torch.Tensor] = None
+_LAST_VALID_BUDGET: Optional[float] = None
+_BUDGET_EMA: Optional[float] = None
+_LAST_BENIGN_MEAN_NORM: Optional[float] = None
+_STABILITY_STATE_NUMEL: Optional[int] = None
 
-# ============================================================================
+
+def safe_normalize(
+    vector: Optional[torch.Tensor],
+    eps: float = 1e-12,
+    min_norm: float = 1e-8,
+    expected_numel: Optional[int] = None,
+) -> Tuple[Optional[torch.Tensor], float, bool]:
+    """Return a unit vector only when shape, values, and norm are valid."""
+    if vector is None:
+        return None, 0.0, False
+    flat = vector.detach().reshape(-1)
+    if expected_numel is not None and flat.numel() != expected_numel:
+        return None, 0.0, False
+    if not torch.isfinite(flat).all():
+        return None, float("nan"), False
+    norm = torch.norm(flat).item()
+    if not torch.isfinite(torch.tensor(norm)) or norm < min_norm:
+        return None, norm, False
+    # Division is performed only after the explicit lower-bound check.
+    return flat / max(norm, eps), norm, True
+
+
+def _bounded_budget(
+    raw_budget: float,
+    previous_budget: Optional[float],
+    previous_ema: Optional[float],
+    beta: float,
+    growth_cap: float,
+    shrink_cap: float,
+) -> Tuple[float, float]:
+    """EMA diagnostic plus hard inter-round growth/shrink bounds."""
+    ema = raw_budget if previous_ema is None else beta * previous_ema + (1.0 - beta) * raw_budget
+    if previous_budget is None or previous_budget <= 0 or not torch.isfinite(torch.tensor(previous_budget)):
+        return raw_budget, ema
+    lower = shrink_cap * previous_budget
+    upper = growth_cap * previous_budget
+    return min(max(raw_budget, lower), upper), ema
+
+
+def _construct_attack_guidance(
+    g_ce: Optional[torch.Tensor],
+    g_cw: Optional[torch.Tensor],
+    historical_pop: Optional[torch.Tensor],
+    benign_grads: torch.Tensor,
+    benign_mean: torch.Tensor,
+    total_params: int,
+    lam: float,
+    min_norm: float,
+) -> Tuple[Optional[torch.Tensor], Dict]:
+    """Choose current, cached, historical, or variance guidance in that order."""
+    global _LAST_VALID_GUIDANCE
+
+    device = benign_mean.device
+    ce_unit, ce_norm, ce_valid = safe_normalize(g_ce, min_norm=min_norm, expected_numel=total_params)
+    cw_unit, cw_norm, cw_valid = safe_normalize(g_cw, min_norm=min_norm, expected_numel=total_params)
+    if ce_valid:
+        ce_unit = ce_unit.to(device)
+    if cw_valid:
+        cw_unit = cw_unit.to(device)
+
+    hist_unit, hist_norm, hist_valid = safe_normalize(
+        historical_pop, min_norm=min_norm, expected_numel=total_params
+    )
+    if hist_valid:
+        hist_unit = hist_unit.to(device)
+
+    cached_unit, _, cached_valid = safe_normalize(
+        _LAST_VALID_GUIDANCE, min_norm=min_norm, expected_numel=total_params
+    )
+    if cached_valid:
+        cached_unit = cached_unit.to(device)
+    elif _LAST_VALID_GUIDANCE is not None:
+        _LAST_VALID_GUIDANCE = None
+
+    ce_cw_cosine = float("nan")
+    combined_pre_norm = 0.0
+    source = "none"
+    fallback_used = False
+    guidance = None
+
+    if ce_valid and cw_valid:
+        ce_cw_cosine = torch.dot(ce_unit, cw_unit).item()
+        combined = lam * ce_unit + (1.0 - lam) * cw_unit
+        guidance, combined_pre_norm, combined_valid = safe_normalize(
+            combined, min_norm=min_norm, expected_numel=total_params
+        )
+        if combined_valid:
+            source = "ce_cw_combined"
+        else:
+            # Cancellation: prefer agreement with history, then the larger raw gradient.
+            if hist_valid:
+                ce_hist = torch.dot(ce_unit, hist_unit).item()
+                cw_hist = torch.dot(cw_unit, hist_unit).item()
+                guidance, source = ((ce_unit, "ce_conflict_history")
+                                    if ce_hist >= cw_hist else (cw_unit, "cw_conflict_history"))
+            else:
+                guidance, source = ((ce_unit, "ce_conflict_raw_norm")
+                                    if ce_norm >= cw_norm else (cw_unit, "cw_conflict_raw_norm"))
+            fallback_used = True
+    elif ce_valid:
+        guidance, source = ce_unit, "ce"
+    elif cw_valid:
+        guidance, source = cw_unit, "cw"
+    elif cached_valid:
+        guidance, source, fallback_used = cached_unit, "cached_last_valid", True
+    elif hist_valid:
+        guidance, source, fallback_used = hist_unit, "historical_perturbation", True
+    else:
+        deviations = benign_grads - benign_mean
+        dev_norms = torch.norm(deviations, dim=1)
+        if dev_norms.numel():
+            idx = torch.argmax(dev_norms)
+            guidance, _, variance_valid = safe_normalize(
+                deviations[idx], min_norm=min_norm, expected_numel=total_params
+            )
+            if variance_valid:
+                source, fallback_used = "benign_variance_fallback", True
+
+    guidance_history_cosine = float("nan")
+    if guidance is not None and hist_valid:
+        guidance_history_cosine = torch.dot(guidance.to(device), hist_unit).item()
+    if guidance is not None:
+        guidance = guidance.to(device).detach()
+        # Only genuine CE/CW attack guidance is promoted to the cross-round
+        # cache.  In particular, do not turn the benign-variance search-space
+        # fallback into a persistent (and misleading) attack direction.
+        if source in {
+            "ce_cw_combined",
+            "ce_conflict_history",
+            "cw_conflict_history",
+            "ce_conflict_raw_norm",
+            "cw_conflict_raw_norm",
+            "ce",
+            "cw",
+        }:
+            _LAST_VALID_GUIDANCE = guidance.clone().detach()
+
+    diagnostics = {
+        "ce_raw_norm": ce_norm, "cw_raw_norm": cw_norm,
+        "ce_valid": ce_valid, "cw_valid": cw_valid,
+        "ce_cw_cosine": ce_cw_cosine, "combined_pre_norm": combined_pre_norm,
+        "historical_direction_valid": hist_valid,
+        "historical_direction_norm": hist_norm,
+        "guidance_history_cosine": guidance_history_cosine,
+        "guidance_source": source, "guidance_fallback_used": fallback_used,
+    }
+    return guidance, diagnostics
+
+
+# ========================================================================
 # Constraint Plugin Base
-# ============================================================================
+# ========================================================================
 class ConstraintPlugin:
     """Base class for constraint plugins"""
 
@@ -50,15 +198,13 @@ class ConstraintPlugin:
         """Convert loss to score via smooth mapping"""
         loss_val = self.loss(population, benign_mean, context)
         ratio = loss_val / (self.threshold + eps)
-        # Smooth non-saturating score: 1/(1+r)
         return 1.0 / (1.0 + ratio)
 
 
 
-
-# ============================================================================
+# ========================================================================
 # Radial Constraint (Distance from benign mean)
-# ============================================================================
+# ========================================================================
 class RadialConstraint(ConstraintPlugin):
     """Radial distance constraint (L2 norm from benign mean)"""
 
@@ -71,7 +217,6 @@ class RadialConstraint(ConstraintPlugin):
         """Estimate threshold from benign updates' radial distances"""
         dists = torch.norm(benign_updates - benign_mean, dim=1)
         self.threshold = torch.quantile(dists, q=self.quantile)
-        # Ensure minimum threshold
         self.threshold = torch.clamp(self.threshold, min=1e-6)
 
     def loss(self, population: torch.Tensor, benign_mean: torch.Tensor,
@@ -80,9 +225,9 @@ class RadialConstraint(ConstraintPlugin):
         return torch.norm(population - benign_mean, dim=1)
 
 
-# ============================================================================
+# ========================================================================
 # Sign Constraint (Layer-normalized sign violation)
-# ============================================================================
+# ========================================================================
 class SignConstraint(ConstraintPlugin):
     """Layer-normalized sign constraint"""
 
@@ -95,14 +240,12 @@ class SignConstraint(ConstraintPlugin):
 
     def fit(self, benign_updates: torch.Tensor, benign_mean: torch.Tensor,
             context: Dict) -> None:
-        """Estimate threshold from benign updates"""
         layer_dims = context['layer_dims']
         benign_losses = self._compute_layer_losses(
             benign_updates, benign_mean, layer_dims
         )
         self.threshold = torch.quantile(benign_losses, q=self.quantile)
         self.threshold = torch.clamp(self.threshold, min=1e-6)
-
 
     def _compute_layer_losses(self, population: torch.Tensor,
                              benign_mean: torch.Tensor,
@@ -144,9 +287,9 @@ class SignConstraint(ConstraintPlugin):
 
 
 
-# ============================================================================
+# ========================================================================
 # Surrogate Guidance Construction
-# ============================================================================
+# ========================================================================
 def compute_surrogate_guidance(
     global_model: torch.nn.Module,
     poison_images: torch.Tensor,
@@ -197,7 +340,6 @@ def compute_surrogate_guidance(
     loss_ce.backward()
     g_ce = extract_gradient_vector(global_model)
 
-
     del outputs_ce, loss_ce
 
     # ===== CW Margin Loss =====
@@ -224,9 +366,9 @@ def compute_surrogate_guidance(
     return g_ce, g_cw
 
 
-# ============================================================================
+# ========================================================================
 # Attack Budget Projection
-# ============================================================================
+# ========================================================================
 def project_to_attack_budget(
     population: torch.Tensor,
     benign_mean: torch.Tensor,
@@ -251,9 +393,9 @@ def project_to_attack_budget(
 
 
 
-# ============================================================================
+# ========================================================================
 # Constraint Scoring and CV Computation
-# ============================================================================
+# ========================================================================
 def compute_constraint_pass_score(
     population: torch.Tensor,
     benign_mean: torch.Tensor,
@@ -267,22 +409,25 @@ def compute_constraint_pass_score(
     Returns:
         total_score: Weighted average score (higher = more stealthy)
         scores_dict: Individual constraint scores
-        losses_dict: Individual constraint losses
+        ratios_dict: Individual constraint loss/threshold ratios
     """
     P = population.shape[0]
     device = population.device
 
     scores_dict = {}
-    losses_dict = {}
+    ratios_dict = {}
     total_score = torch.zeros(P, device=device)
     total_weight = 0.0
 
     for constraint in constraints:
+        # Single loss computation - derive both score and ratio from it
         loss_val = constraint.loss(population, benign_mean, context)
-        score_val = constraint.score(population, benign_mean, context, eps)
+        ratio = loss_val / (constraint.threshold + eps)
+        # Inline score formula: smooth non-saturating score 1/(1+r)
+        score_val = 1.0 / (1.0 + ratio)
 
         scores_dict[constraint.name] = score_val
-        losses_dict[constraint.name] = loss_val
+        ratios_dict[constraint.name] = ratio
 
         total_score += constraint.weight * score_val
         total_weight += constraint.weight
@@ -290,7 +435,7 @@ def compute_constraint_pass_score(
     # Normalize to [0, 1]
     total_score = total_score / (total_weight + eps)
 
-    return total_score, scores_dict, losses_dict
+    return total_score, scores_dict, ratios_dict
 
 
 def compute_cv(
@@ -298,12 +443,16 @@ def compute_cv(
     benign_mean: torch.Tensor,
     constraints: List[ConstraintPlugin],
     context: Dict,
-    eps: float = 1e-12
+    eps: float = 1e-12,
+    ratios_dict: Optional[Dict[str, torch.Tensor]] = None
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Compute Constraint Violation (CV)
 
     CV = sum_c weight_c * max(loss_c / threshold_c - 1, 0)
+
+    Args:
+        ratios_dict: Pre-computed loss/threshold ratios (optional, for efficiency)
 
     Returns:
         total_cv: Total constraint violation per individual
@@ -312,14 +461,16 @@ def compute_cv(
     P = population.shape[0]
     device = population.device
 
+    # Use pre-computed ratios if provided, otherwise compute from scratch
+    if ratios_dict is None:
+        ratios_dict = {}
+        for constraint in constraints:
+            loss_val = constraint.loss(population, benign_mean, context)
+            ratios_dict[constraint.name] = loss_val / (constraint.threshold + eps)
+
     total_cv = torch.zeros(P, device=device)
-    ratios_dict = {}
-
     for constraint in constraints:
-        loss_val = constraint.loss(population, benign_mean, context)
-        ratio = loss_val / (constraint.threshold + eps)
-        ratios_dict[constraint.name] = ratio
-
+        ratio = ratios_dict[constraint.name]
         violation = torch.relu(ratio - 1.0)
         total_cv += constraint.weight * violation
 
@@ -327,9 +478,9 @@ def compute_cv(
 
 
 
-# ============================================================================
+# ========================================================================
 # NSGA-II: Non-dominated Sorting
-# ============================================================================
+# ========================================================================
 def nondominated_sort(objectives: torch.Tensor) -> List[List[int]]:
     """
     NSGA-II non-dominated sorting
@@ -391,9 +542,9 @@ def nondominated_sort(objectives: torch.Tensor) -> List[List[int]]:
 
 
 
-# ============================================================================
+# ========================================================================
 # NSGA-II: Crowding Distance
-# ============================================================================
+# ========================================================================
 def crowding_distance(front_indices: List[int], objectives: torch.Tensor) -> torch.Tensor:
     """
     Compute crowding distance for a Pareto front
@@ -437,9 +588,9 @@ def crowding_distance(front_indices: List[int], objectives: torch.Tensor) -> tor
     return distances
 
 
-# ============================================================================
+# ========================================================================
 # NSGA-II: Compute Rank and Crowding Distance
-# ============================================================================
+# ========================================================================
 def compute_rank_and_crowding(objectives: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute Pareto rank and crowding distance for each individual
@@ -474,9 +625,9 @@ def compute_rank_and_crowding(objectives: torch.Tensor) -> Tuple[torch.Tensor, t
     return ranks, crowding
 
 
-# ============================================================================
+# ========================================================================
 # Binary Tournament Selection
-# ============================================================================
+# ========================================================================
 def binary_tournament_selection(
     objectives: torch.Tensor,
     num_parents: int
@@ -521,9 +672,9 @@ def binary_tournament_selection(
     return parent_indices
 
 
-# ============================================================================
+# ========================================================================
 # NSGA-II: Environmental Selection
-# ============================================================================
+# ========================================================================
 def nsga2_select(
     objectives: torch.Tensor,
     pop_size: int
@@ -560,9 +711,9 @@ def nsga2_select(
 
 
 
-# ============================================================================
+# ========================================================================
 # Genetic Operators: SBX Crossover
-# ============================================================================
+# ========================================================================
 def sbx_crossover(
     parent1: torch.Tensor,
     parent2: torch.Tensor,
@@ -603,9 +754,9 @@ def sbx_crossover(
     return child1, child2
 
 
-# ============================================================================
+# ========================================================================
 # Genetic Operators: Mutation
-# ============================================================================
+# ========================================================================
 def mutation(
     individual: torch.Tensor,
     benign_std: torch.Tensor,
@@ -636,7 +787,7 @@ def compute_dual_objectives(
     constraints: List[ConstraintPlugin],
     attack_guidance: torch.Tensor,
     context: Dict
-) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Compute dual objectives for NSGA-II
 
@@ -648,12 +799,13 @@ def compute_dual_objectives(
         constraint_pass_scores: (P,) total constraint scores
         scores_dict: Per-constraint scores
         total_cv: (P,) constraint violations (diagnostic only)
+        ratios_dict: Per-constraint loss/threshold ratios
     """
     P = population.shape[0]
     device = population.device
 
-    # Objective 1: Constraint pass score
-    constraint_pass_scores, scores_dict, losses_dict = compute_constraint_pass_score(
+    # Objective 1: Constraint pass score (compute loss once, get both score and ratio)
+    constraint_pass_scores, scores_dict, ratios_dict = compute_constraint_pass_score(
         population, benign_mean, constraints, context
     )
 
@@ -661,8 +813,8 @@ def compute_dual_objectives(
     centered = population - benign_mean
     destructiveness = centered @ attack_guidance
 
-    # Compute CV for diagnostics (not an objective)
-    total_cv, ratios_dict = compute_cv(population, benign_mean, constraints, context)
+    # Compute CV for diagnostics (reuse ratios from above)
+    total_cv, _ = compute_cv(population, benign_mean, constraints, context, ratios_dict=ratios_dict)
 
     # Convert to minimization form
     obj1 = -constraint_pass_scores  # max R -> min -R
@@ -670,7 +822,7 @@ def compute_dual_objectives(
 
     objectives = torch.stack([obj1, obj2], dim=0)
 
-    return objectives, constraint_pass_scores, scores_dict, total_cv
+    return objectives, constraint_pass_scores, scores_dict, total_cv, ratios_dict
 
 
 # ============================================================================
@@ -685,7 +837,8 @@ def select_final_solution(
     lambda_s: float = 0.5,
     lambda_a: float = 0.5,
     attack_floor_ratio: float = 0.10,
-    args=None
+    args=None,
+    benign_mean: Optional[torch.Tensor] = None,
 ) -> Tuple[int, Dict]:
     """
     Select final solution from first Pareto front using balanced scoring
@@ -767,11 +920,39 @@ def select_final_solution(
         candidate_norm_stealth = norm_stealth
         candidate_norm_destruct = norm_destructiveness
 
-    # Compute balanced score
-    balanced_scores = lambda_s * candidate_norm_stealth + lambda_a * candidate_norm_destruct
+    selection_mode = getattr(args, 'final_selection_mode', 'balanced_knee') if args is not None else 'balanced_knee'
+    tie_tol = getattr(args, 'selection_tie_tol', 1e-6) if args is not None else 1e-6
+    if selection_mode == 'weighted_sum':
+        selection_values = lambda_s * candidate_norm_stealth + lambda_a * candidate_norm_destruct
+        best_value = selection_values.max()
+        tied = torch.nonzero(selection_values >= best_value - tie_tol).flatten()
+    else:
+        selection_mode = 'balanced_knee'
+        selection_values = torch.sqrt(
+            lambda_s * (1.0 - candidate_norm_stealth).square()
+            + lambda_a * (1.0 - candidate_norm_destruct).square()
+        )
+        best_value = selection_values.min()
+        tied = torch.nonzero(selection_values <= best_value + tie_tol).flatten()
 
-    # Select best
-    best_idx_in_candidates = torch.argmax(balanced_scores).item()
+    # Deterministic tie break: higher pass score, lower budget usage, higher attack.
+    candidate_population = population[candidate_indices]
+    budget_center = benign_mean if benign_mean is not None else population.mean(dim=0)
+    candidate_budget = torch.norm(candidate_population - budget_center, dim=1)
+    if constraint_scores is not None:
+        candidate_stealth = constraint_scores[candidate_indices]
+    else:
+        candidate_stealth = candidate_norm_stealth
+    best_idx_in_candidates = tied[0].item()
+    for pos_tensor in tied[1:]:
+        pos = pos_tensor.item()
+        cur = best_idx_in_candidates
+        cur_key = (candidate_stealth[cur].item(), -candidate_budget[cur].item(),
+                   candidate_norm_destruct[cur].item())
+        new_key = (candidate_stealth[pos].item(), -candidate_budget[pos].item(),
+                   candidate_norm_destruct[pos].item())
+        if new_key > cur_key:
+            best_idx_in_candidates = pos
     best_idx = candidate_indices[best_idx_in_candidates]
 
     # Prepare diagnostics
@@ -786,6 +967,7 @@ def select_final_solution(
         'lambda_s': lambda_s,
         'lambda_a': lambda_a,
         'selected_idx': best_idx,
+        'selection_mode': selection_mode,
     }
 
     if total_cv is not None:
@@ -848,6 +1030,15 @@ def mos_attack(
         idx_current += num_params
 
     total_params = idx_current
+    global _LAST_VALID_GUIDANCE, _LAST_VALID_BUDGET, _BUDGET_EMA
+    global _LAST_BENIGN_MEAN_NORM, _STABILITY_STATE_NUMEL
+    if _STABILITY_STATE_NUMEL is not None and _STABILITY_STATE_NUMEL != total_params:
+        _LAST_VALID_GUIDANCE = None
+        _LAST_VALID_BUDGET = None
+        _BUDGET_EMA = None
+        _LAST_BENIGN_MEAN_NORM = None
+        print("[MOS-Core] Stability state reset: model dimension changed")
+    _STABILITY_STATE_NUMEL = total_params
     print(f"[MOS-Core] Total parameters: {total_params:,}")
 
     # Extract benign updates
@@ -902,29 +1093,19 @@ def mos_attack(
     # ========================================================================
     # Step 3: Construct attack guidance
     # ========================================================================
-    has_valid_guidance = (
-        g_ce is not None and g_cw is not None and
-        not torch.isnan(g_ce).any() and not torch.isinf(g_ce).any() and
-        not torch.isnan(g_cw).any() and not torch.isinf(g_cw).any()
+    min_guidance_norm = getattr(args, 'min_guidance_norm', 1e-8)
+    g_attack, guidance_diag = _construct_attack_guidance(
+        g_ce, g_cw, historical_pop, benign_grads, benign_mean,
+        total_params, lam, min_guidance_norm
     )
-
-    if has_valid_guidance:
-        g_ce_unit = g_ce.to(device) / (torch.norm(g_ce.to(device)) + 1e-9)
-        g_cw_unit = g_cw.to(device) / (torch.norm(g_cw.to(device)) + 1e-9)
-
-        # Combined guidance
-        g_combined = lam * g_ce_unit + (1.0 - lam) * g_cw_unit
-        g_attack = g_combined / (torch.norm(g_combined) + 1e-9)
-
-        print(f"[MOS-Core] Using CE+CW guidance (lambda={lam})")
-        print(f"[MOS-Core] CE-CW cosine similarity: {torch.dot(g_ce_unit, g_cw_unit).item():.4f}")
-    else:
-        # Safe fallback: use benign mean direction
-        print(f"[MOS-Core] WARNING: Invalid guidance, using benign mean direction")
-        g_attack = benign_mean / (torch.norm(benign_mean) + 1e-9)
-
-    g_attack = g_attack.detach()
-    print(f"[MOS-Core] Attack guidance norm: {torch.norm(g_attack).item():.6f}")
+    for key in ("ce_raw_norm", "cw_raw_norm", "ce_valid", "cw_valid",
+                "ce_cw_cosine", "combined_pre_norm",
+                "historical_direction_valid", "historical_direction_norm",
+                "guidance_history_cosine", "guidance_source",
+                "guidance_fallback_used"):
+        print(f"[MOS-Core] {key}={guidance_diag[key]}")
+    final_guidance_norm = torch.norm(g_attack).item() if g_attack is not None else 0.0
+    print(f"[MOS-Core] final_guidance_norm={final_guidance_norm:.6f}")
 
 
     # ========================================================================
@@ -935,11 +1116,71 @@ def mos_attack(
     base_threshold = torch.quantile(dists_benign, q=radius_quantile)
 
     attack_budget_ratio = getattr(args, 'attack_budget_ratio', 1.0)
-    max_dev_threshold = attack_budget_ratio * base_threshold
+    raw_budget = (attack_budget_ratio * base_threshold).item()
+    previous_budget = _LAST_VALID_BUDGET
+    beta = getattr(args, 'budget_ema_beta', 0.9)
+    growth_cap = getattr(args, 'budget_growth_cap', 2.0)
+    shrink_cap = getattr(args, 'budget_shrink_cap', 0.25)
+    raw_budget_valid = raw_budget >= 0 and torch.isfinite(torch.tensor(raw_budget)).item()
+    if not raw_budget_valid:
+        print("[MOS-Core] WARNING: raw attack budget is invalid; using last valid budget")
+        raw_budget = previous_budget if previous_budget is not None else 0.0
+    bounded_budget, budget_ema = _bounded_budget(
+        raw_budget, previous_budget, _BUDGET_EMA, beta, growth_cap, shrink_cap
+    )
+    anomaly_threshold = getattr(args, 'update_scale_anomaly_threshold', 10.0)
+    budget_growth_ratio = (raw_budget / (previous_budget + 1e-12)
+                           if previous_budget is not None else 1.0)
+    benign_mean_growth_ratio = (b_mean_norm / (_LAST_BENIGN_MEAN_NORM + 1e-12)
+                                if _LAST_BENIGN_MEAN_NORM is not None else 1.0)
+    update_scale_anomaly = (
+        not raw_budget_valid
+        or budget_growth_ratio > anomaly_threshold
+        or benign_mean_growth_ratio > anomaly_threshold
+    )
+    max_dev_threshold = benign_mean.new_tensor(bounded_budget)
+    if raw_budget_valid and raw_budget > 0:
+        _LAST_VALID_BUDGET = bounded_budget
+        _BUDGET_EMA = budget_ema
+    _LAST_BENIGN_MEAN_NORM = b_mean_norm
 
     print(f"[MOS-Core] Base radial threshold (q={radius_quantile}): {base_threshold:.4f}")
     print(f"[MOS-Core] Attack budget ratio: {attack_budget_ratio}")
-    print(f"[MOS-Core] Max deviation threshold: {max_dev_threshold:.4f}")
+    print(f"[MOS-Core] raw_radial_budget={raw_budget:.6f}")
+    print(f"[MOS-Core] previous_budget={previous_budget}")
+    print(f"[MOS-Core] budget_ema={budget_ema:.6f}")
+    print(f"[MOS-Core] bounded_attack_budget={bounded_budget:.6f}")
+    print(f"[MOS-Core] budget_growth_ratio={budget_growth_ratio:.6f}")
+    print(f"[MOS-Core] benign_mean_growth_ratio={benign_mean_growth_ratio:.6f}")
+    print(f"[MOS-Core] update_scale_anomaly={update_scale_anomaly}")
+    if update_scale_anomaly:
+        print("[MOS-Core] WARNING: update scale anomaly detected; bounded budget enforced")
+
+    # Never spend generations optimizing a zero/invalid attack objective.
+    if g_attack is None or final_guidance_norm < min_guidance_norm:
+        best_template = benign_mean.clone()
+        hist_unit, _, hist_valid = safe_normalize(
+            historical_pop, min_norm=min_guidance_norm, expected_numel=total_params
+        )
+        if hist_valid and bounded_budget > 0:
+            historical_seed_scale = max(
+                0.0, min(float(getattr(args, 'historical_seed_scale', 0.5)), 1.0)
+            )
+            scale = historical_seed_scale * bounded_budget
+            best_template = benign_mean + scale * hist_unit.to(device)
+            # Keep the skipped-round template within the same hard budget
+            # guarantee as normal evolved/output candidates.
+            best_template, _, _ = project_to_attack_budget(
+                best_template.unsqueeze(0), benign_mean, max_dev_threshold
+            )
+            best_template = best_template.squeeze(0)
+        print("[MOS-Core] ATTACK SKIPPED: no valid attack guidance")
+        print("[MOS-Core] attack_skipped=True")
+        print("[MOS-Core] skip_reason=no_valid_guidance")
+        for i in range(K):
+            all_updates[i] = vector_to_net_dict(best_template, copy.deepcopy(all_updates[i]))
+        historical_perturbation = (best_template - benign_mean).unsqueeze(0).detach()
+        return all_updates, historical_perturbation
 
     # ========================================================================
     # Step 5: Initialize constraints
@@ -1008,16 +1249,23 @@ def mos_attack(
 
     # Historical seed injection
     historical_used = False
-    if historical_pop is not None and num_scale_seeds < pop_size:
+    if historical_pop is not None and pop_size > 0:
         try:
             # historical_pop is expected to be a perturbation relative to benign mean
             hist_pert = historical_pop.squeeze() if historical_pop.dim() > 1 else historical_pop
 
             if hist_pert.shape[0] == total_params and torch.isfinite(hist_pert).all():
-                # Construct historical candidate
-                hist_candidate = benign_mean + hist_pert
-
-                # Project to current budget
+                hist_unit, hist_raw_norm, hist_valid = safe_normalize(
+                    hist_pert, min_norm=min_guidance_norm, expected_numel=total_params
+                )
+                if not hist_valid:
+                    raise ValueError("historical perturbation has near-zero norm")
+                historical_seed_scale = max(
+                    0.0, min(float(getattr(args, 'historical_seed_scale', 0.5)), 1.0)
+                )
+                hist_target_scale = historical_seed_scale * max_dev_threshold
+                # Preserve direction but assign the current bounded scale.
+                hist_candidate = benign_mean + hist_target_scale * hist_unit.to(device)
                 hist_candidate_proj, _, hist_norm_pre = project_to_attack_budget(
                     hist_candidate.unsqueeze(0), benign_mean, max_dev_threshold
                 )
@@ -1036,8 +1284,10 @@ def mos_attack(
                 historical_used = True
 
                 print(f"[MOS-Core] Historical seed injected at position {replace_idx}")
-                print(f"[MOS-Core]   Original norm: {hist_norm_pre.item():.4f}")
-                print(f"[MOS-Core]   Projected norm: {hist_norm_post:.4f}")
+                print(f"[MOS-Core] historical_raw_norm={hist_raw_norm:.6f}")
+                print(f"[MOS-Core] historical_direction_norm={torch.norm(hist_unit).item():.6f}")
+                print(f"[MOS-Core] historical_seed_target_scale={hist_target_scale.item():.6f}")
+                print(f"[MOS-Core] historical_seed_final_norm={hist_norm_post:.6f}")
             else:
                 print(f"[MOS-Core] WARNING: Historical seed dimension mismatch or contains NaN/Inf, ignoring")
         except Exception as e:
@@ -1088,7 +1338,7 @@ def mos_attack(
 
     for gen in range(generations):
         # Evaluate current population
-        objectives, constraint_scores, scores_dict, total_cv = compute_dual_objectives(
+        objectives, constraint_scores, scores_dict, total_cv, cv_ratios = compute_dual_objectives(
             population, benign_mean, constraints, g_attack, context
         )
 
@@ -1126,7 +1376,7 @@ def mos_attack(
         offspring, _, _ = project_to_attack_budget(offspring, benign_mean, max_dev_threshold)
 
         # Evaluate offspring
-        objectives_offspring, _, _, _ = compute_dual_objectives(
+        objectives_offspring, _, _, _, _ = compute_dual_objectives(
             offspring, benign_mean, constraints, g_attack, context
         )
 
@@ -1141,12 +1391,9 @@ def mos_attack(
         population = combined_pop[selected_indices]
 
         # Re-evaluate updated population for accurate logging
-        objectives, constraint_scores, scores_dict, total_cv = compute_dual_objectives(
+        objectives, constraint_scores, scores_dict, total_cv, cv_ratios = compute_dual_objectives(
             population, benign_mean, constraints, g_attack, context
         )
-
-        # Compute diagnostic metrics
-        _, cv_ratios = compute_cv(population, benign_mean, constraints, context)
 
         # Logging
         if (gen + 1) % 10 == 0 or gen == 0:
@@ -1208,12 +1455,9 @@ def mos_attack(
     print(f"\n[MOS-Core] Selecting final solution...")
 
     # Final evaluation
-    final_objectives, final_constraint_scores, final_scores_dict, final_cv = compute_dual_objectives(
+    final_objectives, final_constraint_scores, final_scores_dict, final_cv, final_cv_ratios = compute_dual_objectives(
         population, benign_mean, constraints, g_attack, context
     )
-
-    # Get final CV ratios for detailed logging
-    final_cv_total, final_cv_ratios = compute_cv(population, benign_mean, constraints, context)
 
     # Compute final norms and budget ratios
     final_norms = torch.norm(population - benign_mean, dim=1)
@@ -1223,7 +1467,8 @@ def mos_attack(
     best_idx, selection_diagnostics = select_final_solution(
         population,
         final_objectives,
-        total_cv=final_cv_total,
+        benign_mean=benign_mean,
+        total_cv=final_cv,
         constraint_scores=final_constraint_scores,
         scores_dict=final_scores_dict,
         args=args
@@ -1283,7 +1528,7 @@ def mos_attack(
             idx_val = idx.item() if isinstance(idx, torch.Tensor) else idx
             stealth_val = front_stealth[pos].item()
             destruct_val = front_destruct[pos].item()
-            cv_val = final_cv_total[idx].item()
+            cv_val = final_cv[idx].item()
             radial_ratio = final_cv_ratios['radial'][idx].item()
             radial_score = final_scores_dict['radial'][idx].item()
             sign_ratio = final_cv_ratios['sign'][idx].item()
@@ -1305,9 +1550,12 @@ def mos_attack(
     best_template = population[best_idx].clone().detach()
     best_stealth = -final_objectives[0, best_idx].item()
     best_destruct = -final_objectives[1, best_idx].item()
-    best_cv = final_cv_total[best_idx].item()
+    best_cv = final_cv[best_idx].item()
     best_norm = final_norms[best_idx].item()
     best_budget_ratio = final_budget_ratios[best_idx].item()
+    selected_guidance_alignment = torch.dot(
+        best_template - benign_mean, g_attack
+    ).item() / max(best_norm, 1e-12)
 
     print(f"\n[MOS-Core] Selected solution (index={best_idx}):")
     print(f"[MOS-Core]   Constraint pass score (R): {best_stealth:.3f}")
@@ -1315,6 +1563,12 @@ def mos_attack(
     print(f"[MOS-Core]   Total CV: {best_cv:.4f}")
     print(f"[MOS-Core]   Deviation norm: {best_norm:.4f}")
     print(f"[MOS-Core]   Budget usage: {best_budget_ratio:.2%}")
+    print(f"[MOS-Core] selection_mode={selection_diagnostics.get('selection_mode', 'balanced_knee')}")
+    print(f"[MOS-Core] selected_budget_ratio={best_budget_ratio:.6f}")
+    print(f"[MOS-Core] selected_stealth={best_stealth:.6f}")
+    print(f"[MOS-Core] selected_destructiveness={best_destruct:.6f}")
+    print(f"[MOS-Core] selected_cv={best_cv:.6f}")
+    print(f"[MOS-Core] selected_guidance_alignment={selected_guidance_alignment:.6f}")
 
     # Per-constraint diagnostics
     print(f"[MOS-Core] Per-constraint details:")
@@ -1368,4 +1622,3 @@ def mos_attack(
     print(f"{'='*60}\n")
 
     return all_updates, historical_perturbation
-
