@@ -1,17 +1,25 @@
 ﻿"""
-MOS-Attack: Multi-Objective Stealth Attack with NSGA-II optimization.
-Core constraints: Radial distance + Layer-normalized Sign.
+MOS-Attack (Multi-Objective Stealth Attack) - Simplified Paper Version
+
+This is a clean, paper-ready implementation focusing on:
+- Dual-objective NSGA-II optimization
+- Two core constraints: Radial + Layer-normalized Sign
+- Clear, interpretable constraint scoring
+- Minimal feature set for reproducibility
+
+For experimental features, see mos_experimental.py
 """
 
 import torch
+import torch.nn.functional as F
 import copy
 from .lie import vector_to_net_dict
 from typing import Dict, List, Tuple, Optional
 
 
-# ========================================================================
+# ============================================================================
 # Type Annotations
-# ========================================================================
+# ============================================================================
 TensorDict = Dict[str, torch.Tensor]
 LayerDims = List[Tuple[str, int, int]]
 
@@ -172,9 +180,9 @@ def _construct_attack_guidance(
     return guidance, diagnostics
 
 
-# ========================================================================
+# ============================================================================
 # Constraint Plugin Base
-# ========================================================================
+# ============================================================================
 class ConstraintPlugin:
     """Base class for constraint plugins"""
 
@@ -198,13 +206,15 @@ class ConstraintPlugin:
         """Convert loss to score via smooth mapping"""
         loss_val = self.loss(population, benign_mean, context)
         ratio = loss_val / (self.threshold + eps)
+        # Smooth non-saturating score: 1/(1+r)
         return 1.0 / (1.0 + ratio)
 
 
 
-# ========================================================================
+
+# ============================================================================
 # Radial Constraint (Distance from benign mean)
-# ========================================================================
+# ============================================================================
 class RadialConstraint(ConstraintPlugin):
     """Radial distance constraint (L2 norm from benign mean)"""
 
@@ -217,6 +227,7 @@ class RadialConstraint(ConstraintPlugin):
         """Estimate threshold from benign updates' radial distances"""
         dists = torch.norm(benign_updates - benign_mean, dim=1)
         self.threshold = torch.quantile(dists, q=self.quantile)
+        # Ensure minimum threshold
         self.threshold = torch.clamp(self.threshold, min=1e-6)
 
     def loss(self, population: torch.Tensor, benign_mean: torch.Tensor,
@@ -225,9 +236,9 @@ class RadialConstraint(ConstraintPlugin):
         return torch.norm(population - benign_mean, dim=1)
 
 
-# ========================================================================
+# ============================================================================
 # Sign Constraint (Layer-normalized sign violation)
-# ========================================================================
+# ============================================================================
 class SignConstraint(ConstraintPlugin):
     """Layer-normalized sign constraint"""
 
@@ -240,12 +251,14 @@ class SignConstraint(ConstraintPlugin):
 
     def fit(self, benign_updates: torch.Tensor, benign_mean: torch.Tensor,
             context: Dict) -> None:
+        """Estimate threshold from benign updates"""
         layer_dims = context['layer_dims']
         benign_losses = self._compute_layer_losses(
             benign_updates, benign_mean, layer_dims
         )
         self.threshold = torch.quantile(benign_losses, q=self.quantile)
         self.threshold = torch.clamp(self.threshold, min=1e-6)
+
 
     def _compute_layer_losses(self, population: torch.Tensor,
                              benign_mean: torch.Tensor,
@@ -287,9 +300,9 @@ class SignConstraint(ConstraintPlugin):
 
 
 
-# ========================================================================
+# ============================================================================
 # Surrogate Guidance Construction
-# ========================================================================
+# ============================================================================
 def compute_surrogate_guidance(
     global_model: torch.nn.Module,
     poison_images: torch.Tensor,
@@ -340,6 +353,7 @@ def compute_surrogate_guidance(
     loss_ce.backward()
     g_ce = extract_gradient_vector(global_model)
 
+
     del outputs_ce, loss_ce
 
     # ===== CW Margin Loss =====
@@ -366,9 +380,9 @@ def compute_surrogate_guidance(
     return g_ce, g_cw
 
 
-# ========================================================================
+# ============================================================================
 # Attack Budget Projection
-# ========================================================================
+# ============================================================================
 def project_to_attack_budget(
     population: torch.Tensor,
     benign_mean: torch.Tensor,
@@ -393,9 +407,9 @@ def project_to_attack_budget(
 
 
 
-# ========================================================================
+# ============================================================================
 # Constraint Scoring and CV Computation
-# ========================================================================
+# ============================================================================
 def compute_constraint_pass_score(
     population: torch.Tensor,
     benign_mean: torch.Tensor,
@@ -409,25 +423,22 @@ def compute_constraint_pass_score(
     Returns:
         total_score: Weighted average score (higher = more stealthy)
         scores_dict: Individual constraint scores
-        ratios_dict: Individual constraint loss/threshold ratios
+        losses_dict: Individual constraint losses
     """
     P = population.shape[0]
     device = population.device
 
     scores_dict = {}
-    ratios_dict = {}
+    losses_dict = {}
     total_score = torch.zeros(P, device=device)
     total_weight = 0.0
 
     for constraint in constraints:
-        # Single loss computation - derive both score and ratio from it
         loss_val = constraint.loss(population, benign_mean, context)
-        ratio = loss_val / (constraint.threshold + eps)
-        # Inline score formula: smooth non-saturating score 1/(1+r)
-        score_val = 1.0 / (1.0 + ratio)
+        score_val = constraint.score(population, benign_mean, context, eps)
 
         scores_dict[constraint.name] = score_val
-        ratios_dict[constraint.name] = ratio
+        losses_dict[constraint.name] = loss_val
 
         total_score += constraint.weight * score_val
         total_weight += constraint.weight
@@ -435,7 +446,7 @@ def compute_constraint_pass_score(
     # Normalize to [0, 1]
     total_score = total_score / (total_weight + eps)
 
-    return total_score, scores_dict, ratios_dict
+    return total_score, scores_dict, losses_dict
 
 
 def compute_cv(
@@ -443,16 +454,12 @@ def compute_cv(
     benign_mean: torch.Tensor,
     constraints: List[ConstraintPlugin],
     context: Dict,
-    eps: float = 1e-12,
-    ratios_dict: Optional[Dict[str, torch.Tensor]] = None
+    eps: float = 1e-12
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Compute Constraint Violation (CV)
 
     CV = sum_c weight_c * max(loss_c / threshold_c - 1, 0)
-
-    Args:
-        ratios_dict: Pre-computed loss/threshold ratios (optional, for efficiency)
 
     Returns:
         total_cv: Total constraint violation per individual
@@ -461,16 +468,14 @@ def compute_cv(
     P = population.shape[0]
     device = population.device
 
-    # Use pre-computed ratios if provided, otherwise compute from scratch
-    if ratios_dict is None:
-        ratios_dict = {}
-        for constraint in constraints:
-            loss_val = constraint.loss(population, benign_mean, context)
-            ratios_dict[constraint.name] = loss_val / (constraint.threshold + eps)
-
     total_cv = torch.zeros(P, device=device)
+    ratios_dict = {}
+
     for constraint in constraints:
-        ratio = ratios_dict[constraint.name]
+        loss_val = constraint.loss(population, benign_mean, context)
+        ratio = loss_val / (constraint.threshold + eps)
+        ratios_dict[constraint.name] = ratio
+
         violation = torch.relu(ratio - 1.0)
         total_cv += constraint.weight * violation
 
@@ -478,9 +483,9 @@ def compute_cv(
 
 
 
-# ========================================================================
+# ============================================================================
 # NSGA-II: Non-dominated Sorting
-# ========================================================================
+# ============================================================================
 def nondominated_sort(objectives: torch.Tensor) -> List[List[int]]:
     """
     NSGA-II non-dominated sorting
@@ -542,9 +547,9 @@ def nondominated_sort(objectives: torch.Tensor) -> List[List[int]]:
 
 
 
-# ========================================================================
+# ============================================================================
 # NSGA-II: Crowding Distance
-# ========================================================================
+# ============================================================================
 def crowding_distance(front_indices: List[int], objectives: torch.Tensor) -> torch.Tensor:
     """
     Compute crowding distance for a Pareto front
@@ -588,9 +593,9 @@ def crowding_distance(front_indices: List[int], objectives: torch.Tensor) -> tor
     return distances
 
 
-# ========================================================================
+# ============================================================================
 # NSGA-II: Compute Rank and Crowding Distance
-# ========================================================================
+# ============================================================================
 def compute_rank_and_crowding(objectives: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute Pareto rank and crowding distance for each individual
@@ -625,9 +630,9 @@ def compute_rank_and_crowding(objectives: torch.Tensor) -> Tuple[torch.Tensor, t
     return ranks, crowding
 
 
-# ========================================================================
+# ============================================================================
 # Binary Tournament Selection
-# ========================================================================
+# ============================================================================
 def binary_tournament_selection(
     objectives: torch.Tensor,
     num_parents: int
@@ -672,9 +677,9 @@ def binary_tournament_selection(
     return parent_indices
 
 
-# ========================================================================
+# ============================================================================
 # NSGA-II: Environmental Selection
-# ========================================================================
+# ============================================================================
 def nsga2_select(
     objectives: torch.Tensor,
     pop_size: int
@@ -711,9 +716,9 @@ def nsga2_select(
 
 
 
-# ========================================================================
+# ============================================================================
 # Genetic Operators: SBX Crossover
-# ========================================================================
+# ============================================================================
 def sbx_crossover(
     parent1: torch.Tensor,
     parent2: torch.Tensor,
@@ -754,9 +759,9 @@ def sbx_crossover(
     return child1, child2
 
 
-# ========================================================================
+# ============================================================================
 # Genetic Operators: Mutation
-# ========================================================================
+# ============================================================================
 def mutation(
     individual: torch.Tensor,
     benign_std: torch.Tensor,
@@ -787,7 +792,7 @@ def compute_dual_objectives(
     constraints: List[ConstraintPlugin],
     attack_guidance: torch.Tensor,
     context: Dict
-) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor, Dict[str, torch.Tensor]]:
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
     """
     Compute dual objectives for NSGA-II
 
@@ -799,13 +804,12 @@ def compute_dual_objectives(
         constraint_pass_scores: (P,) total constraint scores
         scores_dict: Per-constraint scores
         total_cv: (P,) constraint violations (diagnostic only)
-        ratios_dict: Per-constraint loss/threshold ratios
     """
     P = population.shape[0]
     device = population.device
 
-    # Objective 1: Constraint pass score (compute loss once, get both score and ratio)
-    constraint_pass_scores, scores_dict, ratios_dict = compute_constraint_pass_score(
+    # Objective 1: Constraint pass score
+    constraint_pass_scores, scores_dict, losses_dict = compute_constraint_pass_score(
         population, benign_mean, constraints, context
     )
 
@@ -813,8 +817,8 @@ def compute_dual_objectives(
     centered = population - benign_mean
     destructiveness = centered @ attack_guidance
 
-    # Compute CV for diagnostics (reuse ratios from above)
-    total_cv, _ = compute_cv(population, benign_mean, constraints, context, ratios_dict=ratios_dict)
+    # Compute CV for diagnostics (not an objective)
+    total_cv, ratios_dict = compute_cv(population, benign_mean, constraints, context)
 
     # Convert to minimization form
     obj1 = -constraint_pass_scores  # max R -> min -R
@@ -822,7 +826,7 @@ def compute_dual_objectives(
 
     objectives = torch.stack([obj1, obj2], dim=0)
 
-    return objectives, constraint_pass_scores, scores_dict, total_cv, ratios_dict
+    return objectives, constraint_pass_scores, scores_dict, total_cv
 
 
 # ============================================================================
@@ -1338,7 +1342,7 @@ def mos_attack(
 
     for gen in range(generations):
         # Evaluate current population
-        objectives, constraint_scores, scores_dict, total_cv, cv_ratios = compute_dual_objectives(
+        objectives, constraint_scores, scores_dict, total_cv = compute_dual_objectives(
             population, benign_mean, constraints, g_attack, context
         )
 
@@ -1376,7 +1380,7 @@ def mos_attack(
         offspring, _, _ = project_to_attack_budget(offspring, benign_mean, max_dev_threshold)
 
         # Evaluate offspring
-        objectives_offspring, _, _, _, _ = compute_dual_objectives(
+        objectives_offspring, _, _, _ = compute_dual_objectives(
             offspring, benign_mean, constraints, g_attack, context
         )
 
@@ -1391,9 +1395,12 @@ def mos_attack(
         population = combined_pop[selected_indices]
 
         # Re-evaluate updated population for accurate logging
-        objectives, constraint_scores, scores_dict, total_cv, cv_ratios = compute_dual_objectives(
+        objectives, constraint_scores, scores_dict, total_cv = compute_dual_objectives(
             population, benign_mean, constraints, g_attack, context
         )
+
+        # Compute diagnostic metrics
+        _, cv_ratios = compute_cv(population, benign_mean, constraints, context)
 
         # Logging
         if (gen + 1) % 10 == 0 or gen == 0:
@@ -1455,9 +1462,12 @@ def mos_attack(
     print(f"\n[MOS-Core] Selecting final solution...")
 
     # Final evaluation
-    final_objectives, final_constraint_scores, final_scores_dict, final_cv, final_cv_ratios = compute_dual_objectives(
+    final_objectives, final_constraint_scores, final_scores_dict, final_cv = compute_dual_objectives(
         population, benign_mean, constraints, g_attack, context
     )
+
+    # Get final CV ratios for detailed logging
+    final_cv_total, final_cv_ratios = compute_cv(population, benign_mean, constraints, context)
 
     # Compute final norms and budget ratios
     final_norms = torch.norm(population - benign_mean, dim=1)
@@ -1468,7 +1478,7 @@ def mos_attack(
         population,
         final_objectives,
         benign_mean=benign_mean,
-        total_cv=final_cv,
+        total_cv=final_cv_total,
         constraint_scores=final_constraint_scores,
         scores_dict=final_scores_dict,
         args=args
@@ -1528,7 +1538,7 @@ def mos_attack(
             idx_val = idx.item() if isinstance(idx, torch.Tensor) else idx
             stealth_val = front_stealth[pos].item()
             destruct_val = front_destruct[pos].item()
-            cv_val = final_cv[idx].item()
+            cv_val = final_cv_total[idx].item()
             radial_ratio = final_cv_ratios['radial'][idx].item()
             radial_score = final_scores_dict['radial'][idx].item()
             sign_ratio = final_cv_ratios['sign'][idx].item()
@@ -1550,7 +1560,7 @@ def mos_attack(
     best_template = population[best_idx].clone().detach()
     best_stealth = -final_objectives[0, best_idx].item()
     best_destruct = -final_objectives[1, best_idx].item()
-    best_cv = final_cv[best_idx].item()
+    best_cv = final_cv_total[best_idx].item()
     best_norm = final_norms[best_idx].item()
     best_budget_ratio = final_budget_ratios[best_idx].item()
     selected_guidance_alignment = torch.dot(
