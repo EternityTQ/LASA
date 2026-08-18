@@ -798,6 +798,54 @@ def test_benign_variance_fallback():
     assert_is_not_none(guidance)
 
 
+def test_no_guidance_fallback_uses_current_budget():
+    """9. No guidance + valid history → uses current_budget (not bounded_budget)"""
+    reset_stability_state()
+
+    # Setup: 2 benign, 1 malicious
+    all_updates = [
+        {'layer1': vec(0.0, 0.0)},      # malicious slot
+        {'layer1': vec(10.0, 10.0)},    # benign
+        {'layer1': vec(12.0, 12.0)},    # benign
+    ]
+
+    class Args:
+        attack_budget_ratio = 1.5
+        radius_quantile = 0.75
+        historical_seed_scale = 0.5
+        pop_size = 4
+        generations = 1
+        crossover_prob = 0.9
+        mutation_eta = 20
+        attack_floor_ratio = 0.0
+        final_selection_mode = 'balanced_knee'
+        selection_tie_tol = 1e-6
+        final_stealth_weight = 0.5
+        final_attack_weight = 0.5
+
+    # Invalid CE/CW guidance (both zero)
+    g_ce = vec(0.0, 0.0)
+    g_cw = vec(0.0, 0.0)
+
+    # Valid historical perturbation
+    historical_pop = vec(5.0, 5.0)
+
+    # Execute - should trigger no-guidance fallback path using current_budget
+    result_updates, result_hist = mos.mos_attack(
+        all_updates,
+        Args(),
+        malicious_attackers_this_round=1,
+        g_ce=g_ce,
+        g_cw=g_cw,
+        historical_pop=historical_pop,
+        lam=0.5
+    )
+
+    # Verify no crash (would get NameError if bounded_budget was referenced)
+    assert_true(isinstance(result_updates, list))
+    assert_is_not_none(result_hist)
+
+
 def test_cached_guidance_fallback():
     """9. Cached last valid guidance as fallback"""
     reset_stability_state()
@@ -860,7 +908,7 @@ def test_cache_dimension_reset():
 
 
 def test_historical_seed_rescaling():
-    """16. Historical seed uses current bounded budget"""
+    """16. Historical seed uses current budget (not bounded_budget)"""
     benign_mean = vec(1.0, 2.0, 3.0)
     hist_pert = vec(0.0, 0.0, 5.0)  # norm=5
 
@@ -869,8 +917,8 @@ def test_historical_seed_rescaling():
     # unit is [0, 0, 1]
     assert_close(hist_unit._v[2], 1.0, tol=1e-6)
 
-    bounded_budget = 10.0; scale = 0.5
-    seed_norm = scale * bounded_budget  # = 5.0
+    current_budget = 10.0; scale = 0.5
+    seed_norm = scale * current_budget  # = 5.0
     assert_close(seed_norm, 5.0)
 
 
@@ -1272,6 +1320,7 @@ if __name__ == '__main__':
         ("CE/CW cancellation → conflict resolution", test_ce_cw_cancellation),
         ("Historical perturbation fallback", test_historical_pop_fallback),
         ("Benign variance fallback", test_benign_variance_fallback),
+        ("No guidance fallback uses current_budget", test_no_guidance_fallback_uses_current_budget),
         ("Cached guidance fallback", test_cached_guidance_fallback),
         ("Cache only stores real attack directions", test_guidance_cache_real_directions),
         ("Cache resets on dimension change", test_cache_dimension_reset),
