@@ -1307,6 +1307,40 @@ def test_final_selection_minimum_cv_fallback():
     assert diagnostics.get('min_cv') == 0.5
 
 
+def test_mutation_does_not_modify_parent():
+    """Ray provenance remains valid because mutation allocates a child."""
+    from algorithms.attack.mos_nsga2 import mutation
+    parent = vec(1.0, 2.0, 3.0)
+    before = list(parent._v)
+    mutation(parent, vec(0.1, 0.1, 0.1))
+    assert_true(parent._v == before)
+
+
+def test_adaptive_alpha_estimation_is_chunked_and_cv_based():
+    """Estimator finds the last formally feasible CV point without a large batch."""
+    original = mos.compute_dual_objectives
+    batch_sizes = []
+
+    def fake_objectives(candidates, benign_mean, constraints, guidance, context):
+        batch_sizes.append(candidates.shape[0])
+        cvs = []
+        for row in range(candidates.shape[0]):
+            alpha = candidates[row].item()
+            cvs.append(0.0 if alpha <= 0.035 else 0.01)
+        return None, None, None, Tensor(cvs), None
+
+    mos.compute_dual_objectives = fake_objectives
+    try:
+        alpha = mos._estimate_feasible_alpha(
+            vec(0.0), Tensor([1.0]), vec(1.0), [], {}, batch_size=2
+        )
+    finally:
+        mos.compute_dual_objectives = original
+
+    assert_true(0.034 <= alpha <= 0.035)
+    assert_true(max(batch_sizes) <= 2)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1341,6 +1375,8 @@ if __name__ == '__main__':
         ("Equal-CV infeasible tie-broken by objectives", test_equal_cv_infeasible_tiebreak),
         ("Final selection from feasible subset", test_final_selection_from_feasible_subset),
         ("Final selection minimum-CV fallback", test_final_selection_minimum_cv_fallback),
+        ("Mutation preserves parent vector", test_mutation_does_not_modify_parent),
+        ("Adaptive alpha uses chunked formal-CV checks", test_adaptive_alpha_estimation_is_chunked_and_cv_based),
     ]
 
     failed = 0

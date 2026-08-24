@@ -42,6 +42,10 @@ if __name__ == '__main__':
     parser.add_argument('--mos_classifier_sparsity', type=float, default=1.0, help='Sparsity ratio for classifier layers in MOS attack guidance gradient (0.0-1.0)')
     parser.add_argument('--use_dnc_aware_mask', type=int, default=1, help='Enable DNC-aware mask when DNC defense is active (0: disabled, 1: enabled)')
     parser.add_argument('--enable_subspace_constraint', type=int, default=1, help='Enable subspace robustness constraint in MOS attack (0: disabled, 1: enabled)')
+    parser.add_argument('--mos_inject_attack_ray_diagnostics', type=int, default=0,
+                        help='Inject and track small-alpha g_attack ray candidates (0: disabled, 1: enabled)')
+    parser.add_argument('--mos_adaptive_guided_init', type=int, default=0,
+                        help='Scale MOS guidance seeds to the current constraint-feasible ray boundary')
 
     # NEW: Scoring system parameters (打分系统参数)
     parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],

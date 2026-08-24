@@ -50,6 +50,44 @@ def safe_normalize(
     # Division is performed only after the explicit lower-bound check.
     return flat / max(norm, eps), norm, True
 
+
+def _estimate_feasible_alpha(benign_mean, max_dev_threshold, g_attack, constraints, context, batch_size=2):
+    """Return the last CV-feasible point in the ray's feasible prefix."""
+    def evaluate(alphas):
+        results = []
+        for start in range(0, len(alphas), batch_size):
+            chunk = alphas[start:start + batch_size]
+            candidates = torch.empty((len(chunk), benign_mean.numel()),
+                                     device=benign_mean.device, dtype=benign_mean.dtype)
+            for row, alpha in enumerate(chunk):
+                candidates[row] = benign_mean + alpha * max_dev_threshold * g_attack
+            _, _, _, total_cv, _ = compute_dual_objectives(candidates, benign_mean, constraints,
+                                                           g_attack, context)
+            for alpha, cv in zip(chunk, total_cv):
+                value = cv.item()
+                results.append((alpha, value, torch.isfinite(cv).item() and value <= 1e-6))
+        return results
+
+    samples = evaluate([i / 16.0 for i in range(17)])
+    if not samples[0][2]:
+        return 0.0
+    left, right = samples[0][0], None
+    for alpha, _, feasible in samples[1:]:
+        if not feasible:
+            right = alpha
+            break
+        left = alpha
+    if right is None:
+        return 1.0
+    for _ in range(2):
+        samples = evaluate([left + (right - left) * i / 8.0 for i in range(9)])
+        for alpha, _, feasible in samples[1:]:
+            if not feasible:
+                right = alpha
+                break
+            left = alpha
+    return left
+
 # ============================================================================
 # Attack Guidance Construction
 # ============================================================================
@@ -459,17 +497,28 @@ def mos_attack(
     print(f"\n[MOS-Core] Initializing population (size={pop_size})...")
 
     # Multi-scale initialization
-    default_scales = [0.0, 0.10, 0.25, 0.50, 0.75, 0.95]
+    adaptive_guided_init = bool(getattr(args, 'mos_adaptive_guided_init', False))
+    if adaptive_guided_init:
+        alpha_feasible = _estimate_feasible_alpha(
+            benign_mean, max_dev_threshold, g_attack, constraints, context
+        )
+        default_scales = [fraction * alpha_feasible
+                          for fraction in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
+        print(f"[MOS-Core] adaptive_guided_init=True "
+              f"alpha_feasible={alpha_feasible:.6f} scales={default_scales}")
+    else:
+        default_scales = [0.0, 0.10, 0.25, 0.50, 0.75, 0.95]
 
     # Select scales based on pop_size
     if pop_size <= len(default_scales):
         # Use evenly spaced scales, always keeping 0.0 and 0.95
         if pop_size == 1:
-            selected_scales = [0.95]
+            selected_scales = [default_scales[-1]]
         elif pop_size == 2:
-            selected_scales = [0.0, 0.95]
+            selected_scales = [0.0, default_scales[-1]]
         elif pop_size == 3:
-            selected_scales = [0.0, 0.5, 0.95]
+            selected_scales = ([0.0, 0.5 * alpha_feasible, alpha_feasible]
+                               if adaptive_guided_init else [0.0, 0.5, 0.95])
         else:
             # Uniformly sample from default scales
             indices = torch.linspace(0, len(default_scales) - 1, pop_size).long()
@@ -512,7 +561,9 @@ def mos_attack(
                 hist_norm_post = torch.norm(hist_candidate_proj - benign_mean).item()
 
                 # Replace a mid-scale seed (e.g., 0.25 or 0.5 position)
-                if 0.25 in selected_scales:
+                if adaptive_guided_init:
+                    replace_idx = num_scale_seeds // 2
+                elif 0.25 in selected_scales:
                     replace_idx = selected_scales.index(0.25)
                 elif 0.5 in selected_scales:
                     replace_idx = selected_scales.index(0.5)
@@ -547,6 +598,16 @@ def mos_attack(
         print(f"[MOS-Core] Generated {pop_size - num_scale_seeds} random candidates "
               f"(noise_scale={random_noise_scale})")
 
+    ray_diagnostics = bool(getattr(args, 'mos_inject_attack_ray_diagnostics', False))
+    ray_alphas = [0.0, 0.005, 0.01, 0.015, 0.02, 0.025, 0.03]
+    provenance = [None] * pop_size
+    if ray_diagnostics:
+        ray_population = torch.stack([
+            benign_mean + alpha * max_dev_threshold * g_attack for alpha in ray_alphas
+        ])
+        population = torch.cat([population, ray_population], dim=0)
+        provenance.extend(ray_alphas)
+
     # Project entire population to budget
     population, init_clipped, init_norms = project_to_attack_budget(
         population, benign_mean, max_dev_threshold
@@ -559,6 +620,24 @@ def mos_attack(
           f"min={budget_ratios.min():.4f}, mean={budget_ratios.mean():.4f}, max={budget_ratios.max():.4f}")
     print(f"[MOS-Core] Clipped ratio: {init_clipped.float().mean():.2%}")
     print(f"[MOS-Core] Historical seed used: {historical_used}")
+
+    if ray_diagnostics:
+        init_obj, _, _, init_cv, _ = compute_dual_objectives(
+            population, benign_mean, constraints, g_attack, context
+        )
+        print("[MOS-RayDiag] stage=post_injection")
+        for idx, alpha in enumerate(provenance):
+            if alpha is not None:
+                print(f"[MOS-RayDiag] alpha={alpha:.6f} stealth={-init_obj[0, idx].item():.6f} "
+                      f"destructiveness={-init_obj[1, idx].item():.6f} "
+                      f"cv={init_cv[idx].item():.6f} feasible={init_cv[idx].item() <= 1e-6}")
+
+        selected_indices = nsga2_select(init_obj, pop_size, total_cv=init_cv)
+        population = population[selected_indices]
+        provenance = [provenance[i] for i in selected_indices]
+        survivors = [alpha for alpha in provenance if alpha is not None]
+        statuses = {alpha: alpha in survivors for alpha in ray_alphas}
+        print(f"[MOS-RayDiag] stage=post_first_environmental_selection survival={statuses}")
 
     # ========================================================================
     # Step 7: NSGA-II Evolution
@@ -628,6 +707,9 @@ def mos_attack(
 
         # Update population
         population = combined_pop[selected_indices]
+        if ray_diagnostics:
+            combined_provenance = provenance + [None] * pop_size
+            provenance = [combined_provenance[i] for i in selected_indices]
 
         # Re-evaluate updated population for accurate logging
         objectives, constraint_scores, scores_dict, total_cv, cv_ratios = compute_dual_objectives(
@@ -713,6 +795,13 @@ def mos_attack(
         scores_dict=final_scores_dict,
         args=args
     )
+
+    if ray_diagnostics:
+        survivors = [alpha for alpha in provenance if alpha is not None]
+        selected_alpha = provenance[best_idx]
+        statuses = {alpha: alpha in survivors for alpha in ray_alphas}
+        print(f"[MOS-RayDiag] stage=final survival={statuses} "
+              f"selected_is_injected={selected_alpha is not None} selected_alpha={selected_alpha}")
 
     # Print selection parameters
     print(f"[MOS-Core] Selection parameters:")
