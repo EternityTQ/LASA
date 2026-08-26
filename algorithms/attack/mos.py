@@ -51,8 +51,16 @@ def safe_normalize(
     return flat / max(norm, eps), norm, True
 
 
+def _selection_cv(total_cv, constraint_mode):
+    """Keep Deb feasible-first only in strict mode."""
+    return total_cv if constraint_mode == 'strict' else None
+
+
 def _estimate_feasible_alpha(benign_mean, max_dev_threshold, g_attack, constraints, context, batch_size=2):
     """Return the last CV-feasible point in the ray's feasible prefix."""
+    width_tolerance = 1e-5
+    max_refinements = 20
+
     def evaluate(alphas):
         results = []
         for start in range(0, len(alphas), batch_size):
@@ -61,31 +69,66 @@ def _estimate_feasible_alpha(benign_mean, max_dev_threshold, g_attack, constrain
                                      device=benign_mean.device, dtype=benign_mean.dtype)
             for row, alpha in enumerate(chunk):
                 candidates[row] = benign_mean + alpha * max_dev_threshold * g_attack
-            _, _, _, total_cv, _ = compute_dual_objectives(candidates, benign_mean, constraints,
-                                                           g_attack, context)
-            for alpha, cv in zip(chunk, total_cv):
+            _, _, scores, total_cv, ratios = compute_dual_objectives(
+                candidates, benign_mean, constraints, g_attack, context)
+            for row, (alpha, cv) in enumerate(zip(chunk, total_cv)):
                 value = cv.item()
-                results.append((alpha, value, torch.isfinite(cv).item() and value <= 1e-6))
+                details = {}
+                if scores is not None and ratios is not None:
+                    for constraint in constraints:
+                        ratio = ratios[constraint.name][row].item()
+                        details[constraint.name] = (ratio, scores[constraint.name][row].item(),
+                                                    max(ratio - 1.0, 0.0))
+                feasible = torch.isfinite(cv).item() and value <= 1e-6
+                results.append((alpha, value, feasible, details))
         return results
+
+    def log_boundary(left_sample, right_sample=None):
+        right_details = right_sample[3] if right_sample is not None else {}
+        limiting = max(right_details, key=lambda name: right_details[name][0], default='none')
+        def encode(sample):
+            return '|'.join(f"{name}:ratio={v[0]:.6g}:score={v[1]:.6g}:violation={v[2]:.6g}"
+                            for name, v in sample[3].items()) or 'none'
+        right_alpha = f"{right_sample[0]:.6f}" if right_sample is not None else 'none'
+        print(f"[MOS-Boundary] alpha_feasible={left_sample[0]:.6f} "
+              f"alpha_infeasible={right_alpha} limiting_constraint={limiting} "
+              f"left={encode(left_sample)} "
+              f"right={encode(right_sample) if right_sample is not None else 'none'}")
 
     samples = evaluate([i / 16.0 for i in range(17)])
     if not samples[0][2]:
+        print("[MOS-Core] alpha_feasible=0.000000 boundary_width=unknown "
+              "refinements=0 zero_reason=异常回退")
+        log_boundary(samples[0], samples[0])
         return 0.0
-    left, right = samples[0][0], None
-    for alpha, _, feasible in samples[1:]:
+    left_sample, right_sample = samples[0], None
+    for sample in samples[1:]:
+        alpha, _, feasible, _ = sample
         if not feasible:
-            right = alpha
+            right_sample = sample
             break
-        left = alpha
-    if right is None:
+        left_sample = sample
+    if right_sample is None:
+        print("[MOS-Core] alpha_feasible=1.000000 boundary_width=0.000000 "
+              "refinements=0")
+        log_boundary(left_sample)
         return 1.0
-    for _ in range(2):
-        samples = evaluate([left + (right - left) * i / 8.0 for i in range(9)])
-        for alpha, _, feasible in samples[1:]:
-            if not feasible:
-                right = alpha
-                break
-            left = alpha
+
+    refinements = 0
+    while right_sample[0] - left_sample[0] >= width_tolerance and refinements < max_refinements:
+        midpoint = (left_sample[0] + right_sample[0]) / 2.0
+        midpoint_sample = evaluate([midpoint])[0]
+        if midpoint_sample[2]:
+            left_sample = midpoint_sample
+        else:
+            right_sample = midpoint_sample
+        refinements += 1
+
+    left, right = left_sample[0], right_sample[0]
+    zero_reason = " zero_reason=确认无非零可行点" if left == 0.0 else ""
+    print(f"[MOS-Core] alpha_feasible={left:.6f} boundary_width={right - left:.6g} "
+          f"refinements={refinements}{zero_reason}")
+    log_boundary(left_sample, right_sample)
     return left
 
 # ============================================================================
@@ -498,14 +541,20 @@ def mos_attack(
 
     # Multi-scale initialization
     adaptive_guided_init = bool(getattr(args, 'mos_adaptive_guided_init', False))
+    constraint_mode = getattr(args, 'mos_constraint_mode', 'strict')
+    if constraint_mode not in ('strict', 'soft_select', 'soft_full'):
+        raise ValueError(f"Unknown mos_constraint_mode: {constraint_mode}")
+    print(f"[MOS-Core] constraint_mode={constraint_mode}")
     if adaptive_guided_init:
         alpha_feasible = _estimate_feasible_alpha(
             benign_mean, max_dev_threshold, g_attack, constraints, context
         )
-        default_scales = [fraction * alpha_feasible
+        alpha_init = 1.0 if constraint_mode == 'soft_full' else alpha_feasible
+        default_scales = [fraction * alpha_init
                           for fraction in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
         print(f"[MOS-Core] adaptive_guided_init=True "
-              f"alpha_feasible={alpha_feasible:.6f} scales={default_scales}")
+              f"alpha_feasible={alpha_feasible:.6f} alpha_init={alpha_init:.6f} "
+              f"scales={default_scales}")
     else:
         default_scales = [0.0, 0.10, 0.25, 0.50, 0.75, 0.95]
 
@@ -517,7 +566,7 @@ def mos_attack(
         elif pop_size == 2:
             selected_scales = [0.0, default_scales[-1]]
         elif pop_size == 3:
-            selected_scales = ([0.0, 0.5 * alpha_feasible, alpha_feasible]
+            selected_scales = ([0.0, 0.5 * alpha_init, alpha_init]
                                if adaptive_guided_init else [0.0, 0.5, 0.95])
         else:
             # Uniformly sample from default scales
@@ -632,7 +681,8 @@ def mos_attack(
                       f"destructiveness={-init_obj[1, idx].item():.6f} "
                       f"cv={init_cv[idx].item():.6f} feasible={init_cv[idx].item() <= 1e-6}")
 
-        selected_indices = nsga2_select(init_obj, pop_size, total_cv=init_cv)
+        selected_indices = nsga2_select(init_obj, pop_size,
+                                        total_cv=_selection_cv(init_cv, constraint_mode))
         population = population[selected_indices]
         provenance = [provenance[i] for i in selected_indices]
         survivors = [alpha for alpha in provenance if alpha is not None]
@@ -660,7 +710,8 @@ def mos_attack(
         )
 
         # Binary tournament parent selection
-        parent_indices = binary_tournament_selection(objectives, pop_size, total_cv=total_cv)
+        parent_indices = binary_tournament_selection(
+            objectives, pop_size, total_cv=_selection_cv(total_cv, constraint_mode))
 
         # Generate offspring
         offspring = torch.empty_like(population)
@@ -703,7 +754,8 @@ def mos_attack(
         combined_cv = torch.cat([total_cv, offspring_cv], dim=0)
 
         # Environmental selection
-        selected_indices = nsga2_select(combined_obj, pop_size, total_cv=combined_cv)
+        selected_indices = nsga2_select(combined_obj, pop_size,
+                                        total_cv=_selection_cv(combined_cv, constraint_mode))
 
         # Update population
         population = combined_pop[selected_indices]
@@ -749,12 +801,6 @@ def mos_attack(
             mean_budget = budget_ratios.mean().item()
             max_budget = budget_ratios.max().item()
 
-            # Per-constraint ratios
-            radial_ratios = cv_ratios['radial']
-            radial_scores = scores_dict['radial']
-            sign_ratios = cv_ratios['sign']
-            sign_scores = scores_dict['sign']
-
             print(f"[MOS-Core] Gen {gen+1}/{generations}:")
             print(f"  Stealth: mean={mean_stealth:.3f}, best={best_stealth:.3f}")
             print(f"  Destructiveness: mean={mean_destruct:.3f}, best={best_destruct:.3f}")
@@ -766,10 +812,11 @@ def mos_attack(
                 print(f"  Max feasible destruct: N/A")
             print(f"  Pareto front size: {pareto_front_size}")
             print(f"  Budget ratio: mean={mean_budget:.3f}, max={max_budget:.3f}")
-            print(f"  Radial: mean_ratio={radial_ratios.mean():.3f}, max_ratio={radial_ratios.max():.3f}, "
-                  f"mean_score={radial_scores.mean():.3f}")
-            print(f"  Sign: mean_ratio={sign_ratios.mean():.3f}, max_ratio={sign_ratios.max():.3f}, "
-                  f"mean_score={sign_scores.mean():.3f}")
+            for constraint in constraints:
+                ratios = cv_ratios[constraint.name]
+                scores = scores_dict[constraint.name]
+                print(f"  {constraint.name.capitalize()}: mean_ratio={ratios.mean():.3f}, "
+                      f"max_ratio={ratios.max():.3f}, mean_score={scores.mean():.3f}")
 
     # ========================================================================
     # Step 8: Final solution selection
@@ -790,7 +837,7 @@ def mos_attack(
         population,
         final_objectives,
         benign_mean=benign_mean,
-        total_cv=final_cv,
+        total_cv=_selection_cv(final_cv, constraint_mode),
         constraint_scores=final_constraint_scores,
         scores_dict=final_scores_dict,
         args=args
@@ -850,6 +897,8 @@ def mos_attack(
     print(f"[MOS-Core] selected_budget_ratio={best_budget_ratio:.6f}")
     print(f"[MOS-Core] selected_stealth={best_stealth:.6f}")
     print(f"[MOS-Core] selected_destructiveness={best_destruct:.6f}")
+    print(f"[MOS-Core] selected_R={best_stealth:.6f}")
+    print(f"[MOS-Core] selected_A={best_destruct:.6f}")
     print(f"[MOS-Core] selected_cv={best_cv:.6f}")
     print(f"[MOS-Core] selected_feasible={best_cv <= 1e-6}")
     print(f"[MOS-Core] selected_guidance_alignment={selected_guidance_alignment:.6f}")

@@ -1,0 +1,11 @@
+metric,value
+final_test_acc,62.120
+last_10_rounds_mean_test_acc,44.749
+min_test_acc,10.000
+max_test_acc,63.550
+min_alpha_feasible,0.000000
+max_alpha_feasible,0.003906
+mean_alpha_feasible,0.001296
+min_selected_A,0.009
+max_selected_A,29.221
+mean_selected_A,0.962

@@ -46,6 +46,9 @@ if __name__ == '__main__':
                         help='Inject and track small-alpha g_attack ray candidates (0: disabled, 1: enabled)')
     parser.add_argument('--mos_adaptive_guided_init', type=int, default=0,
                         help='Scale MOS guidance seeds to the current constraint-feasible ray boundary')
+    parser.add_argument('--mos_constraint_mode', type=str, default='strict',
+                        choices=['strict', 'soft_select', 'soft_full'],
+                        help='Constraint handling for MOS initialization and NSGA-II selection')
 
     # NEW: Scoring system parameters (打分系统参数)
     parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],

@@ -4,7 +4,7 @@ Smoke tests for MOS-Attack stability fixes (mos.py).
 All tests use a pure-Python mock of torch so no GPU/CPU install is needed.
 """
 
-import sys, os, math, types
+import sys, os, math, types, io, contextlib
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Minimal but complete-enough torch mock
@@ -1341,6 +1341,68 @@ def test_adaptive_alpha_estimation_is_chunked_and_cv_based():
     assert_true(max(batch_sizes) <= 2)
 
 
+def test_adaptive_alpha_estimation_resolves_sub_milliscale_boundary():
+    """A feasible prefix below the old 0.000977 resolution remains nonzero."""
+    original = mos.compute_dual_objectives
+    batch_sizes = []
+
+    def fake_objectives(candidates, benign_mean, constraints, guidance, context):
+        batch_sizes.append(candidates.shape[0])
+        cvs = [0.0 if candidates[row].item() <= 0.0004 else 0.01
+               for row in range(candidates.shape[0])]
+        return None, None, None, Tensor(cvs), None
+
+    mos.compute_dual_objectives = fake_objectives
+    try:
+        alpha = mos._estimate_feasible_alpha(
+            vec(0.0), Tensor([1.0]), vec(1.0), [], {}, batch_size=2
+        )
+    finally:
+        mos.compute_dual_objectives = original
+
+    assert_true(0.0003 <= alpha <= 0.0004)
+    assert_true(max(batch_sizes) <= 2)
+
+
+def test_boundary_diagnostics_are_plugin_generic():
+    """Boundary logs both sides for arbitrary plugin names and identifies the limiter."""
+    original = mos.compute_dual_objectives
+    constraints = [types.SimpleNamespace(name='first'), types.SimpleNamespace(name='second')]
+
+    def fake_objectives(candidates, benign_mean, constraints, guidance, context):
+        alphas = [candidates[row].item() for row in range(candidates.shape[0])]
+        first = Tensor([0.8 for _ in alphas])
+        second = Tensor([alpha / 0.4 for alpha in alphas])
+        scores = {'first': Tensor([1 / (1 + v) for v in first._v]),
+                  'second': Tensor([1 / (1 + v) for v in second._v])}
+        ratios = {'first': first, 'second': second}
+        cvs = Tensor([max(v - 1.0, 0.0) for v in second._v])
+        return None, None, scores, cvs, ratios
+
+    mos.compute_dual_objectives = fake_objectives
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            alpha = mos._estimate_feasible_alpha(
+                vec(0.0), Tensor([1.0]), vec(1.0), constraints, {}, batch_size=2)
+    finally:
+        mos.compute_dual_objectives = original
+
+    text = output.getvalue()
+    assert_true(0.399 <= alpha <= 0.4)
+    assert_true('limiting_constraint=second' in text)
+    assert_true('left=first:ratio=' in text and 'right=first:ratio=' in text)
+    assert_true('|second:ratio=' in text and ':violation=' in text)
+
+
+def test_constraint_mode_cv_routing():
+    """Only strict mode forwards CV into feasible-first selection."""
+    cv = Tensor([0.0, 0.2])
+    assert_true(mos._selection_cv(cv, 'strict') is cv)
+    assert_true(mos._selection_cv(cv, 'soft_select') is None)
+    assert_true(mos._selection_cv(cv, 'soft_full') is None)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1377,6 +1439,9 @@ if __name__ == '__main__':
         ("Final selection minimum-CV fallback", test_final_selection_minimum_cv_fallback),
         ("Mutation preserves parent vector", test_mutation_does_not_modify_parent),
         ("Adaptive alpha uses chunked formal-CV checks", test_adaptive_alpha_estimation_is_chunked_and_cv_based),
+        ("Adaptive alpha resolves sub-milliscale boundary", test_adaptive_alpha_estimation_resolves_sub_milliscale_boundary),
+        ("Boundary diagnostics are plugin-generic", test_boundary_diagnostics_are_plugin_generic),
+        ("Constraint modes route CV correctly", test_constraint_mode_cv_routing),
     ]
 
     failed = 0
