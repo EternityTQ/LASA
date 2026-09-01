@@ -1,0 +1,2775 @@
+Running mode=soft_select GPU=5 SEED=1 ROUNDS=60
+/home3/zbh25lsb/data/LASA-master/utils/data_pre_process.py:300: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  labels_sorted = torch.tensor(dataset.targets).sort()
+############ Case 0 ############
+--------------- data setup ---------------------------------
+Files already downloaded and verified
+Files already downloaded and verified
+Creating validation dataset from testing dataset...
+length of dataset:70000
+num. of training data:50000
+num. of testing data:10000
+num. of validation data:10000
+num. of users:100
+average num. of samples per user:500
+--------------- model setup --------------------------------
+model dim: 11183582
+--------------- training... --------------------------------
+Fixed malicious clients: 20 out of 100 total users (20.0%)
+attack numbers = 4
+current iteration attack ratio: 0.16
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 21
+[MOS-Core] Malicious slots: 4
+[MOS-Core] Benign mean norm: 1828.3033
+[MOS-Core] Benign std (mean): 0.0191
+[MOS-Core] ce_raw_norm=0.19625045359134674
+[MOS-Core] cw_raw_norm=1.2068815231323242
+[MOS-Core] ce_valid=True
+[MOS-Core] cw_valid=True
+[MOS-Core] ce_cw_cosine=-0.174740731716156
+[MOS-Core] combined_pre_norm=0.6423625349998474
+[MOS-Core] historical_direction_valid=False
+[MOS-Core] historical_direction_norm=0.0
+[MOS-Core] guidance_history_cosine=nan
+[MOS-Core] guidance_source=ce_cw_combined
+[MOS-Core] guidance_fallback_used=False
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 9901.0586
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=9901.058594
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 9901.0586
+[MOS-Core]   Sign threshold: 3.2645
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.003067 boundary_width=7.62939e-06 refinements=13
+[MOS-Boundary] alpha_feasible=0.003067 alpha_infeasible=0.003075 limiting_constraint=sign left=radial:ratio=0.00306702:score=0.996942:violation=0|sign:ratio=0.998623:score=0.500344:violation=0 right=radial:ratio=0.00307465:score=0.996935:violation=0|sign:ratio=1.00129:score=0.499677:violation=0.00129378
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.003067 alpha_init=0.003067 scales=[0.0, 0.0006134033203125, 0.001226806640625, 0.0018402099609375, 0.00245361328125, 0.0030670166015625]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0006134033203125, 0.001226806640625, 0.0018402099609375, 0.00245361328125, 0.0030670166015625]
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=2950.8652, max=8385.0254
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2980, max=0.8469
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: False
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.635, best=1.000
+  Destructiveness: mean=3523.324, best=8431.807
+  CV: mean=62.6613, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 30.367
+  Pareto front size: 10
+  Budget ratio: mean=0.361, max=0.854
+  Radial: mean_ratio=0.361, max_ratio=0.854, mean_score=0.789
+  Sign: mean_ratio=126.067, max_ratio=299.037, mean_score=0.326
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.643, best=1.000
+  Destructiveness: mean=2783.751, best=8540.104
+  CV: mean=49.8668, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.367
+  Pareto front size: 10
+  Budget ratio: mean=0.298, max=0.871
+  Radial: mean_ratio=0.298, max_ratio=0.871, mean_score=0.819
+  Sign: mean_ratio=100.567, max_ratio=303.904, mean_score=0.291
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.585, best=1.000
+  Destructiveness: mean=3556.279, best=8781.722
+  CV: mean=63.4110, min=0.0000
+  Feasibility: count=1, ratio=10.00%
+  Max feasible destruct: 0.000
+  Pareto front size: 10
+  Budget ratio: mean=0.382, max=0.903
+  Radial: mean_ratio=0.382, max_ratio=0.903, mean_score=0.772
+  Sign: mean_ratio=127.722, max_ratio=306.318, mean_score=0.211
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.536, best=1.000
+  Destructiveness: mean=4451.812, best=9080.965
+  CV: mean=79.2146, min=0.0000
+  Feasibility: count=1, ratio=10.00%
+  Max feasible destruct: 0.000
+  Pareto front size: 10
+  Budget ratio: mean=0.476, max=0.940
+  Radial: mean_ratio=0.476, max_ratio=0.940, mean_score=0.723
+  Sign: mean_ratio=159.329, max_ratio=309.033, mean_score=0.162
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.595, best=1.000
+  Destructiveness: mean=3714.437, best=9236.462
+  CV: mean=66.5521, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.798
+  Pareto front size: 10
+  Budget ratio: mean=0.406, max=0.961
+  Radial: mean_ratio=0.406, max_ratio=0.961, mean_score=0.762
+  Sign: mean_ratio=133.905, max_ratio=314.357, mean_score=0.262
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.631, best=1.000
+  Destructiveness: mean=3008.143, best=9352.894
+  CV: mean=53.3486, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.798
+  Pareto front size: 10
+  Budget ratio: mean=0.340, max=0.976
+  Radial: mean_ratio=0.340, max_ratio=0.976, mean_score=0.798
+  Sign: mean_ratio=107.499, max_ratio=316.221, mean_score=0.296
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.610, best=1.000
+  Destructiveness: mean=3071.124, best=9538.545
+  CV: mean=55.1548, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.798
+  Pareto front size: 10
+  Budget ratio: mean=0.361, max=1.000
+  Radial: mean_ratio=0.361, max_ratio=1.000, mean_score=0.782
+  Sign: mean_ratio=111.112, max_ratio=321.498, mean_score=0.265
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.617, best=1.000
+  Destructiveness: mean=3028.811, best=9538.545
+  CV: mean=53.9797, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.798
+  Pareto front size: 10
+  Budget ratio: mean=0.348, max=1.000
+  Radial: mean_ratio=0.348, max_ratio=1.000, mean_score=0.793
+  Sign: mean_ratio=108.796, max_ratio=321.498, mean_score=0.265
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.625, best=1.000
+  Destructiveness: mean=3051.720, best=9538.557
+  CV: mean=55.1349, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.798
+  Pareto front size: 10
+  Budget ratio: mean=0.358, max=1.000
+  Radial: mean_ratio=0.358, max_ratio=1.000, mean_score=0.785
+  Sign: mean_ratio=111.071, max_ratio=321.498, mean_score=0.303
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.611, best=1.000
+  Destructiveness: mean=3059.404, best=9541.477
+  CV: mean=55.8663, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 30.798
+  Pareto front size: 10
+  Budget ratio: mean=0.362, max=1.000
+  Radial: mean_ratio=0.362, max_ratio=1.000, mean_score=0.783
+  Sign: mean_ratio=112.535, max_ratio=319.998, mean_score=0.266
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.599, best=1.000
+  Destructiveness: mean=3112.807, best=9541.477
+  CV: mean=56.6547, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 31.538
+  Pareto front size: 10
+  Budget ratio: mean=0.375, max=1.000
+  Radial: mean_ratio=0.375, max_ratio=1.000, mean_score=0.775
+  Sign: mean_ratio=114.135, max_ratio=319.998, mean_score=0.248
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 954.1477
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.334, 1.000]
+  Destructiveness range: [0.000, 9541.477]
+  Candidates after attack floor: 4
+
+[MOS-Core] Selected solution (index=5):
+[MOS-Core]   Constraint pass score (R): 0.400
+[MOS-Core]   Destructiveness (A): 6207.843
+[MOS-Core]   Total CV: 105.5872
+[MOS-Core]   Deviation norm: 6645.9551
+[MOS-Core]   Budget usage: 67.12%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.671237
+[MOS-Core] selected_stealth=0.400470
+[MOS-Core] selected_destructiveness=6207.842773
+[MOS-Core] selected_R=0.400470
+[MOS-Core] selected_A=6207.842773
+[MOS-Core] selected_cv=105.587242
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.934081
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.598, ratio=0.671, loss=6645.9550, threshold=9901.0586
+[MOS-Core]   Sign: score=0.005, ratio=212.174, loss=692.6510, threshold=3.2645
+
+[MOS-Core] Generating 4 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=6645.9180, mean=6645.9463, max=6645.9761
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   0: train_loss = 4.326, test_acc = 10.000
+attack numbers = 7
+current iteration attack ratio: 0.28
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: 524.1462
+[MOS-Core] Benign std (mean): 0.0009
+[MOS-Core] ce_raw_norm=0.2793910801410675
+[MOS-Core] cw_raw_norm=1.317028284072876
+[MOS-Core] ce_valid=True
+[MOS-Core] cw_valid=True
+[MOS-Core] ce_cw_cosine=-0.34355390071868896
+[MOS-Core] combined_pre_norm=0.572907567024231
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=6645.955078125
+[MOS-Core] guidance_history_cosine=0.04793926328420639
+[MOS-Core] guidance_source=ce_cw_combined
+[MOS-Core] guidance_fallback_used=False
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 187.5332
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=187.533218
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 187.5332
+[MOS-Core]   Sign threshold: 0.6492
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.019913 boundary_width=7.62939e-06 refinements=13
+[MOS-Boundary] alpha_feasible=0.019913 alpha_infeasible=0.019920 limiting_constraint=sign left=radial:ratio=0.0199127:score=0.980476:violation=0|sign:ratio=0.999803:score=0.500049:violation=0 right=radial:ratio=0.0199203:score=0.980469:violation=0|sign:ratio=1.00024:score=0.49994:violation=0.000240922
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.019913 alpha_init=0.019913 scales=[0.0, 0.0039825439453125, 0.007965087890625, 0.0119476318359375, 0.01593017578125, 0.0199127197265625]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0039825439453125, 0.007965087890625, 0.0119476318359375, 0.01593017578125, 0.0199127197265625]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=6645.955078
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=93.766609
+[MOS-Core] historical_seed_final_norm=93.766602
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=44.2707, max=123.9639
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2361, max=0.6610
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.644, best=1.000
+  Destructiveness: mean=56.791, best=123.187
+  CV: mean=8.6159, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 3.734
+  Pareto front size: 10
+  Budget ratio: mean=0.307, max=0.665
+  Radial: mean_ratio=0.307, max_ratio=0.665, mean_score=0.800
+  Sign: mean_ratio=17.984, max_ratio=39.141, mean_score=0.332
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.615, best=1.000
+  Destructiveness: mean=57.546, best=124.083
+  CV: mean=8.6783, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 3.734
+  Pareto front size: 10
+  Budget ratio: mean=0.324, max=0.675
+  Radial: mean_ratio=0.324, max_ratio=0.675, mean_score=0.787
+  Sign: mean_ratio=18.193, max_ratio=38.820, mean_score=0.273
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.636, best=1.000
+  Destructiveness: mean=48.093, best=129.782
+  CV: mean=7.2720, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 3.741
+  Pareto front size: 10
+  Budget ratio: mean=0.288, max=0.719
+  Radial: mean_ratio=0.288, max_ratio=0.719, mean_score=0.807
+  Sign: mean_ratio=15.380, max_ratio=40.644, mean_score=0.295
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.608, best=1.000
+  Destructiveness: mean=59.416, best=136.782
+  CV: mean=8.9115, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 3.741
+  Pareto front size: 10
+  Budget ratio: mean=0.344, max=0.769
+  Radial: mean_ratio=0.344, max_ratio=0.769, mean_score=0.777
+  Sign: mean_ratio=18.659, max_ratio=40.416, mean_score=0.270
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.601, best=1.000
+  Destructiveness: mean=59.757, best=139.912
+  CV: mean=9.0084, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.494
+  Pareto front size: 10
+  Budget ratio: mean=0.352, max=0.802
+  Radial: mean_ratio=0.352, max_ratio=0.802, mean_score=0.772
+  Sign: mean_ratio=18.853, max_ratio=40.613, mean_score=0.259
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.595, best=1.000
+  Destructiveness: mean=60.432, best=145.625
+  CV: mean=9.0454, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.542
+  Pareto front size: 10
+  Budget ratio: mean=0.366, max=0.849
+  Radial: mean_ratio=0.366, max_ratio=0.849, mean_score=0.763
+  Sign: mean_ratio=18.927, max_ratio=40.572, mean_score=0.258
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.588, best=1.000
+  Destructiveness: mean=62.576, best=149.404
+  CV: mean=9.1443, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.542
+  Pareto front size: 10
+  Budget ratio: mean=0.389, max=0.887
+  Radial: mean_ratio=0.389, max_ratio=0.887, mean_score=0.754
+  Sign: mean_ratio=19.125, max_ratio=41.249, mean_score=0.256
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.581, best=1.000
+  Destructiveness: mean=62.725, best=153.749
+  CV: mean=9.1906, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.305
+  Pareto front size: 10
+  Budget ratio: mean=0.395, max=0.924
+  Radial: mean_ratio=0.395, max_ratio=0.924, mean_score=0.751
+  Sign: mean_ratio=19.224, max_ratio=41.464, mean_score=0.240
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.598, best=1.000
+  Destructiveness: mean=61.349, best=162.523
+  CV: mean=8.9332, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.124
+  Pareto front size: 10
+  Budget ratio: mean=0.386, max=0.999
+  Radial: mean_ratio=0.386, max_ratio=0.999, mean_score=0.761
+  Sign: mean_ratio=18.671, max_ratio=42.661, mean_score=0.271
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.601, best=1.000
+  Destructiveness: mean=60.413, best=162.828
+  CV: mean=8.8657, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.072
+  Pareto front size: 10
+  Budget ratio: mean=0.374, max=1.000
+  Radial: mean_ratio=0.374, max_ratio=1.000, mean_score=0.769
+  Sign: mean_ratio=18.548, max_ratio=43.042, mean_score=0.267
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.570, best=1.000
+  Destructiveness: mean=76.086, best=163.009
+  CV: mean=10.8325, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.197
+  Pareto front size: 10
+  Budget ratio: mean=0.466, max=1.000
+  Radial: mean_ratio=0.466, max_ratio=1.000, mean_score=0.724
+  Sign: mean_ratio=22.472, max_ratio=43.415, mean_score=0.261
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 16.3009
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.341, 1.000]
+  Destructiveness range: [0.000, 163.009]
+  Candidates after attack floor: 7
+
+[MOS-Core] Selected solution (index=7):
+[MOS-Core]   Constraint pass score (R): 0.426
+[MOS-Core]   Destructiveness (A): 107.043
+[MOS-Core]   Total CV: 16.6804
+[MOS-Core]   Deviation norm: 112.3102
+[MOS-Core]   Budget usage: 59.89%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.598882
+[MOS-Core] selected_stealth=0.426385
+[MOS-Core] selected_destructiveness=107.043442
+[MOS-Core] selected_R=0.426385
+[MOS-Core] selected_A=107.043442
+[MOS-Core] selected_cv=16.680447
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.953106
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.625, ratio=0.599, loss=112.3102, threshold=187.5332
+[MOS-Core]   Sign: score=0.028, ratio=34.361, loss=22.3070, threshold=0.6492
+
+[MOS-Core] Generating 7 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=112.3096, mean=112.3103, max=112.3112
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   1: train_loss = 2.227, test_acc = 10.000
+attack numbers = 5
+current iteration attack ratio: 0.2
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: 2732314.7500
+[MOS-Core] Benign std (mean): 5.5751
+[MOS-Core] ce_raw_norm=186697344.0
+[MOS-Core] cw_raw_norm=186697344.0
+[MOS-Core] ce_valid=True
+[MOS-Core] cw_valid=True
+[MOS-Core] ce_cw_cosine=1.0
+[MOS-Core] combined_pre_norm=0.9999999403953552
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=112.31022644042969
+[MOS-Core] guidance_history_cosine=0.020769838243722916
+[MOS-Core] guidance_source=ce_cw_combined
+[MOS-Core] guidance_fallback_used=False
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 11196848.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=11196848.000000
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 11196848.0000
+[MOS-Core]   Sign threshold: 1.9312
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000046 boundary_width=7.62939e-06 refinements=13
+[MOS-Boundary] alpha_feasible=0.000046 alpha_infeasible=0.000053 limiting_constraint=sign left=radial:ratio=4.57764e-05:score=0.999954:violation=0|sign:ratio=0.889993:score=0.529103:violation=0 right=radial:ratio=5.34058e-05:score=0.999947:violation=0|sign:ratio=1.04957:score=0.487906:violation=0.049575
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000046 alpha_init=0.000046 scales=[0.0, 9.155273437500001e-06, 1.8310546875000003e-05, 2.7465820312499997e-05, 3.6621093750000005e-05, 4.57763671875e-05]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 9.155273437500001e-06, 1.8310546875000003e-05, 2.7465820312499997e-05, 3.6621093750000005e-05, 4.57763671875e-05]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=112.310226
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=5598424.000000
+[MOS-Core] historical_seed_final_norm=5598424.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=1659863.3750, max=7131046.5000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.1482, max=0.6369
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.648, best=1.000
+  Destructiveness: mean=2087611.250, best=7121676.000
+  CV: mean=1966.8988, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 512.549
+  Pareto front size: 10
+  Budget ratio: mean=0.191, max=0.639
+  Radial: mean_ratio=0.191, max_ratio=0.639, mean_score=0.866
+  Sign: mean_ratio=3934.657, max_ratio=13430.010, mean_score=0.212
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.684, best=1.000
+  Destructiveness: mean=1981447.000, best=7205471.000
+  CV: mean=1869.7463, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 512.575
+  Pareto front size: 10
+  Budget ratio: mean=0.187, max=0.652
+  Radial: mean_ratio=0.187, max_ratio=0.652, mean_score=0.871
+  Sign: mean_ratio=3740.252, max_ratio=13637.130, mean_score=0.311
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.682, best=1.000
+  Destructiveness: mean=1993371.375, best=7302794.500
+  CV: mean=1885.7894, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 512.890
+  Pareto front size: 10
+  Budget ratio: mean=0.192, max=0.668
+  Radial: mean_ratio=0.192, max_ratio=0.668, mean_score=0.868
+  Sign: mean_ratio=3772.339, max_ratio=13887.681, mean_score=0.311
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.684, best=1.000
+  Destructiveness: mean=1938871.000, best=7409706.500
+  CV: mean=1836.6858, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 513.642
+  Pareto front size: 10
+  Budget ratio: mean=0.189, max=0.682
+  Radial: mean_ratio=0.189, max_ratio=0.682, mean_score=0.870
+  Sign: mean_ratio=3674.132, max_ratio=14122.991, mean_score=0.311
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.683, best=1.000
+  Destructiveness: mean=1952692.625, best=7532841.500
+  CV: mean=1856.3635, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 514.573
+  Pareto front size: 10
+  Budget ratio: mean=0.192, max=0.699
+  Radial: mean_ratio=0.192, max_ratio=0.699, mean_score=0.869
+  Sign: mean_ratio=3713.488, max_ratio=14465.933, mean_score=0.311
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.681, best=1.000
+  Destructiveness: mean=1962864.375, best=7632670.500
+  CV: mean=1871.3848, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 516.931
+  Pareto front size: 10
+  Budget ratio: mean=0.195, max=0.716
+  Radial: mean_ratio=0.195, max_ratio=0.716, mean_score=0.867
+  Sign: mean_ratio=3743.531, max_ratio=14747.435, mean_score=0.311
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.679, best=1.000
+  Destructiveness: mean=1976058.000, best=7745164.000
+  CV: mean=1888.6660, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 519.642
+  Pareto front size: 10
+  Budget ratio: mean=0.200, max=0.733
+  Radial: mean_ratio=0.200, max_ratio=0.733, mean_score=0.863
+  Sign: mean_ratio=3778.094, max_ratio=15041.771, mean_score=0.311
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.677, best=1.000
+  Destructiveness: mean=1988884.875, best=7854584.000
+  CV: mean=1908.5256, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 524.378
+  Pareto front size: 10
+  Budget ratio: mean=0.205, max=0.753
+  Radial: mean_ratio=0.205, max_ratio=0.753, mean_score=0.861
+  Sign: mean_ratio=3817.815, max_ratio=15383.498, mean_score=0.310
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.677, best=1.000
+  Destructiveness: mean=2002125.375, best=7965988.500
+  CV: mean=1929.0176, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 524.675
+  Pareto front size: 10
+  Budget ratio: mean=0.208, max=0.775
+  Radial: mean_ratio=0.208, max_ratio=0.775, mean_score=0.860
+  Sign: mean_ratio=3858.799, max_ratio=15726.325, mean_score=0.310
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.674, best=1.000
+  Destructiveness: mean=2016468.375, best=8096158.500
+  CV: mean=1948.6608, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 529.432
+  Pareto front size: 10
+  Budget ratio: mean=0.213, max=0.797
+  Radial: mean_ratio=0.213, max_ratio=0.797, mean_score=0.857
+  Sign: mean_ratio=3898.087, max_ratio=16082.237, mean_score=0.310
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.672, best=1.000
+  Destructiveness: mean=2024533.375, best=8158905.500
+  CV: mean=1961.8389, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 530.460
+  Pareto front size: 10
+  Budget ratio: mean=0.218, max=0.806
+  Radial: mean_ratio=0.218, max_ratio=0.806, mean_score=0.854
+  Sign: mean_ratio=3924.443, max_ratio=16283.775, mean_score=0.310
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 815890.5500
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.369, 1.000]
+  Destructiveness range: [0.000, 8158905.500]
+  Candidates after attack floor: 4
+
+[MOS-Core] Selected solution (index=3):
+[MOS-Core]   Constraint pass score (R): 0.408
+[MOS-Core]   Destructiveness (A): 7093047.500
+[MOS-Core]   Total CV: 6688.5327
+[MOS-Core]   Deviation norm: 7118924.5000
+[MOS-Core]   Budget usage: 63.58%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.635797
+[MOS-Core] selected_stealth=0.407573
+[MOS-Core] selected_destructiveness=7093047.500000
+[MOS-Core] selected_R=0.407573
+[MOS-Core] selected_A=7093047.500000
+[MOS-Core] selected_cv=6688.532715
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.996369
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.611, ratio=0.636, loss=7118924.6362, threshold=11196848.0000
+[MOS-Core]   Sign: score=0.000, ratio=13378.065, loss=25836.1493, threshold=1.9312
+
+[MOS-Core] Generating 5 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=7118921.5000, mean=7118925.0000, max=7118930.0000
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   2: train_loss = 128.955, test_acc = 10.000
+attack numbers = 5
+current iteration attack ratio: 0.2
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: 725641.4375
+[MOS-Core] Benign std (mean): 0.0667
+[MOS-Core] ce_raw_norm=1239340998983680.0
+[MOS-Core] cw_raw_norm=1239340998983680.0
+[MOS-Core] ce_valid=True
+[MOS-Core] cw_valid=True
+[MOS-Core] ce_cw_cosine=1.0
+[MOS-Core] combined_pre_norm=0.9999999403953552
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=7118924.5
+[MOS-Core] guidance_history_cosine=0.01702864095568657
+[MOS-Core] guidance_source=ce_cw_combined
+[MOS-Core] guidance_fallback_used=False
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 76048.7344
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=76048.734375
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 76048.7344
+[MOS-Core]   Sign threshold: 2.3019
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000145 boundary_width=7.62939e-06 refinements=13
+[MOS-Boundary] alpha_feasible=0.000145 alpha_infeasible=0.000153 limiting_constraint=sign left=radial:ratio=0.000144959:score=0.999855:violation=0|sign:ratio=0.961149:score=0.509905:violation=0 right=radial:ratio=0.000152588:score=0.999847:violation=0|sign:ratio=1.01571:score=0.496103:violation=0.0157108
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000145 alpha_init=0.000145 scales=[0.0, 2.8991699218750002e-05, 5.7983398437500004e-05, 8.697509765625e-05, 0.00011596679687500001, 0.00014495849609375]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 2.8991699218750002e-05, 5.7983398437500004e-05, 8.697509765625e-05, 0.00011596679687500001, 0.00014495849609375]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=7118924.500000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=38024.367188
+[MOS-Core] historical_seed_final_norm=38024.367188
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=14958.3350, max=38024.3672
+[MOS-Core] Budget ratios: min=0.0000, mean=0.1967, max=0.5000
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.678, best=1.000
+  Destructiveness: mean=14530.413, best=35916.184
+  CV: mean=690.3531, min=0.0000
+  Feasibility: count=4, ratio=40.00%
+  Max feasible destruct: 11.024
+  Pareto front size: 10
+  Budget ratio: mean=0.197, max=0.476
+  Radial: mean_ratio=0.197, max_ratio=0.476, mean_score=0.860
+  Sign: mean_ratio=1381.455, max_ratio=3382.470, mean_score=0.312
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.659, best=1.000
+  Destructiveness: mean=12380.378, best=36493.223
+  CV: mean=586.7182, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 11.073
+  Pareto front size: 10
+  Budget ratio: mean=0.182, max=0.493
+  Radial: mean_ratio=0.182, max_ratio=0.493, mean_score=0.866
+  Sign: mean_ratio=1174.267, max_ratio=3411.107, mean_score=0.246
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.669, best=1.000
+  Destructiveness: mean=12596.069, best=37278.051
+  CV: mean=600.5783, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 4.410
+  Pareto front size: 10
+  Budget ratio: mean=0.190, max=0.507
+  Radial: mean_ratio=0.190, max_ratio=0.507, mean_score=0.861
+  Sign: mean_ratio=1201.906, max_ratio=3529.900, mean_score=0.283
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.616, best=1.000
+  Destructiveness: mean=15827.950, best=38090.402
+  CV: mean=759.7195, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 4.482
+  Pareto front size: 10
+  Budget ratio: mean=0.239, max=0.524
+  Radial: mean_ratio=0.239, max_ratio=0.524, mean_score=0.827
+  Sign: mean_ratio=1520.276, max_ratio=3568.335, mean_score=0.194
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.616, best=1.000
+  Destructiveness: mean=15742.255, best=38597.484
+  CV: mean=736.5890, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 4.527
+  Pareto front size: 10
+  Budget ratio: mean=0.240, max=0.534
+  Radial: mean_ratio=0.240, max_ratio=0.534, mean_score=0.827
+  Sign: mean_ratio=1474.015, max_ratio=3568.335, mean_score=0.195
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.615, best=1.000
+  Destructiveness: mean=15894.588, best=40057.676
+  CV: mean=747.0292, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 4.547
+  Pareto front size: 10
+  Budget ratio: mean=0.242, max=0.561
+  Radial: mean_ratio=0.242, max_ratio=0.561, mean_score=0.826
+  Sign: mean_ratio=1494.898, max_ratio=3699.171, mean_score=0.193
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.605, best=1.000
+  Destructiveness: mean=16739.137, best=42392.102
+  CV: mean=733.2523, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 5.945
+  Pareto front size: 10
+  Budget ratio: mean=0.265, max=0.603
+  Radial: mean_ratio=0.265, max_ratio=0.603, mean_score=0.812
+  Sign: mean_ratio=1467.350, max_ratio=3409.918, mean_score=0.190
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.606, best=1.000
+  Destructiveness: mean=16853.094, best=44474.480
+  CV: mean=733.0031, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 5.945
+  Pareto front size: 10
+  Budget ratio: mean=0.266, max=0.642
+  Radial: mean_ratio=0.266, max_ratio=0.642, mean_score=0.814
+  Sign: mean_ratio=1466.852, max_ratio=3480.007, mean_score=0.190
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.617, best=1.000
+  Destructiveness: mean=17060.354, best=46667.250
+  CV: mean=737.7215, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.006
+  Pareto front size: 10
+  Budget ratio: mean=0.267, max=0.678
+  Radial: mean_ratio=0.267, max_ratio=0.678, mean_score=0.815
+  Sign: mean_ratio=1476.245, max_ratio=3512.145, mean_score=0.220
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.590, best=1.000
+  Destructiveness: mean=21199.428, best=48894.258
+  CV: mean=884.1765, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.359
+  Pareto front size: 10
+  Budget ratio: mean=0.333, max=0.723
+  Radial: mean_ratio=0.333, max_ratio=0.723, mean_score=0.781
+  Sign: mean_ratio=1769.167, max_ratio=3726.925, mean_score=0.209
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.592, best=1.000
+  Destructiveness: mean=18984.646, best=51257.746
+  CV: mean=778.1714, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.585
+  Pareto front size: 10
+  Budget ratio: mean=0.321, max=0.776
+  Radial: mean_ratio=0.321, max_ratio=0.776, mean_score=0.785
+  Sign: mean_ratio=1557.161, max_ratio=3839.280, mean_score=0.206
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 5125.7746
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.375, 1.000]
+  Destructiveness range: [0.000, 51257.746]
+  Candidates after attack floor: 6
+
+[MOS-Core] Selected solution (index=2):
+[MOS-Core]   Constraint pass score (R): 0.465
+[MOS-Core]   Destructiveness (A): 31526.979
+[MOS-Core]   Total CV: 1455.4969
+[MOS-Core]   Deviation norm: 32906.6172
+[MOS-Core]   Budget usage: 43.27%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.432704
+[MOS-Core] selected_stealth=0.465435
+[MOS-Core] selected_destructiveness=31526.978516
+[MOS-Core] selected_R=0.465435
+[MOS-Core] selected_A=31526.978516
+[MOS-Core] selected_cv=1455.496948
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.958077
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.698, ratio=0.433, loss=32906.6166, threshold=76048.7344
+[MOS-Core]   Sign: score=0.000, ratio=2911.994, loss=6703.0261, threshold=2.3019
+
+[MOS-Core] Generating 5 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=32905.8047, mean=32906.4828, max=32907.0469
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   3: train_loss = 5.545, test_acc = 10.000
+attack numbers = 7
+current iteration attack ratio: 0.28
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: 1399848892891136.0000
+[MOS-Core] Benign std (mean): 27954904.0000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=32906.6171875
+[MOS-Core] guidance_history_cosine=0.9580765962600708
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 120604720103424.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=120604720103424.000000
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 120604720103424.0000
+[MOS-Core]   Sign threshold: 0.9408
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial:ratio=0:score=1:violation=0|sign:ratio=0:score=1:violation=0 right=radial:ratio=7.62939e-06:score=0.999992:violation=0|sign:ratio=1.65721e+06:score=6.03424e-07:violation=1.65721e+06
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=32906.617188
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=60302360051712.000000
+[MOS-Core] historical_seed_final_norm=60302360051712.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=27912090681344.0000, max=78202227654656.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2314, max=0.6484
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.657, best=1.000
+  Destructiveness: mean=27522576154624.000, best=77797779308544.000
+  CV: mean=25345982464.0000, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 0.252
+  Pareto front size: 10
+  Budget ratio: mean=0.241, max=0.648
+  Radial: mean_ratio=0.241, max_ratio=0.648, mean_score=0.836
+  Sign: mean_ratio=50691964928.000, max_ratio=140117131264.000, mean_score=0.299
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.602, best=1.000
+  Destructiveness: mean=33252087693312.000, best=78764952256512.000
+  CV: mean=30381948928.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.969
+  Pareto front size: 10
+  Budget ratio: mean=0.291, max=0.667
+  Radial: mean_ratio=0.291, max_ratio=0.667, mean_score=0.803
+  Sign: mean_ratio=60763897856.000, max_ratio=141060947968.000, mean_score=0.199
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.600, best=1.000
+  Destructiveness: mean=33646375337984.000, best=81983073943552.000
+  CV: mean=30697109504.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 3.011
+  Pareto front size: 10
+  Budget ratio: mean=0.295, max=0.697
+  Radial: mean_ratio=0.295, max_ratio=0.697, mean_score=0.801
+  Sign: mean_ratio=61394219008.000, max_ratio=141992689664.000, mean_score=0.198
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.597, best=1.000
+  Destructiveness: mean=33794132279296.000, best=83482084638720.000
+  CV: mean=30911469568.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 4.525
+  Pareto front size: 10
+  Budget ratio: mean=0.301, max=0.705
+  Radial: mean_ratio=0.301, max_ratio=0.705, mean_score=0.796
+  Sign: mean_ratio=61822939136.000, max_ratio=144037838848.000, mean_score=0.197
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.592, best=1.000
+  Destructiveness: mean=35297395998720.000, best=85632638517248.000
+  CV: mean=32350883840.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 6.495
+  Pareto front size: 10
+  Budget ratio: mean=0.314, max=0.726
+  Radial: mean_ratio=0.314, max_ratio=0.726, mean_score=0.790
+  Sign: mean_ratio=64701767680.000, max_ratio=145979015168.000, mean_score=0.196
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.592, best=1.000
+  Destructiveness: mean=35448499994624.000, best=88611852648448.000
+  CV: mean=32570882048.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 6.495
+  Pareto front size: 10
+  Budget ratio: mean=0.319, max=0.760
+  Radial: mean_ratio=0.319, max_ratio=0.760, mean_score=0.789
+  Sign: mean_ratio=65141764096.000, max_ratio=147989233664.000, mean_score=0.196
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.587, best=1.000
+  Destructiveness: mean=35840403177472.000, best=91969963425792.000
+  CV: mean=32934733824.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 6.764
+  Pareto front size: 10
+  Budget ratio: mean=0.330, max=0.803
+  Radial: mean_ratio=0.330, max_ratio=0.803, mean_score=0.783
+  Sign: mean_ratio=65869467648.000, max_ratio=150619521024.000, mean_score=0.196
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.585, best=1.000
+  Destructiveness: mean=36607495241728.000, best=100028781690880.000
+  CV: mean=33161033728.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 6.919
+  Pareto front size: 10
+  Budget ratio: mean=0.340, max=0.902
+  Radial: mean_ratio=0.340, max_ratio=0.902, mean_score=0.780
+  Sign: mean_ratio=66322067456.000, max_ratio=153104564224.000, mean_score=0.195
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.584, best=1.000
+  Destructiveness: mean=36282294075392.000, best=105007680585728.000
+  CV: mean=33439180800.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 9.521
+  Pareto front size: 10
+  Budget ratio: mean=0.342, max=0.960
+  Radial: mean_ratio=0.342, max_ratio=0.960, mean_score=0.780
+  Sign: mean_ratio=66878361600.000, max_ratio=153471942656.000, mean_score=0.194
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.563, best=1.000
+  Destructiveness: mean=44360175452160.000, best=107379576274944.000
+  CV: mean=38250409984.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 9.521
+  Pareto front size: 10
+  Budget ratio: mean=0.419, max=0.992
+  Radial: mean_ratio=0.419, max_ratio=0.992, mean_score=0.747
+  Sign: mean_ratio=76500819968.000, max_ratio=154963378176.000, mean_score=0.194
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.549, best=1.000
+  Destructiveness: mean=49524559052800.000, best=108017076928512.000
+  CV: mean=42586234880.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 11.681
+  Pareto front size: 10
+  Budget ratio: mean=0.464, max=1.000
+  Radial: mean_ratio=0.464, max_ratio=1.000, mean_score=0.726
+  Sign: mean_ratio=85172469760.000, max_ratio=155148419072.000, mean_score=0.194
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 10801707692851.2012
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.333, 1.000]
+  Destructiveness range: [0.000, 108017076928512.000]
+  Candidates after attack floor: 6
+
+[MOS-Core] Selected solution (index=9):
+[MOS-Core]   Constraint pass score (R): 0.394
+[MOS-Core]   Destructiveness (A): 81253130829824.000
+[MOS-Core]   Total CV: 74743349248.0000
+[MOS-Core]   Deviation norm: 83573428191232.0000
+[MOS-Core]   Budget usage: 69.30%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.692953
+[MOS-Core] selected_stealth=0.393789
+[MOS-Core] selected_destructiveness=81253130829824.000000
+[MOS-Core] selected_R=0.393789
+[MOS-Core] selected_A=81253130829824.000000
+[MOS-Core] selected_cv=74743349248.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.972239
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.591, ratio=0.693, loss=83573430222339.0000, threshold=120604720103424.0000
+[MOS-Core]   Sign: score=0.000, ratio=149486698496.000, loss=140632400899.7354, threshold=0.9408
+
+[MOS-Core] Generating 7 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=83573008760832.0000, mean=83573343106779.4219, max=83573436579840.0000
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   4: train_loss = 291727.840, test_acc = 9.880
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: 110904200921088.0000
+[MOS-Core] Benign std (mean): 9132763.0000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=83573428191232.0
+[MOS-Core] guidance_history_cosine=0.9722392559051514
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 25726040408064.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=25726040408064.000000
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 25726040408064.0000
+[MOS-Core]   Sign threshold: 0.4886
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial:ratio=0:score=1:violation=0|sign:ratio=0:score=1:violation=0 right=radial:ratio=7.62939e-06:score=0.999992:violation=0|sign:ratio=3.63977e+06:score=2.74743e-07:violation=3.63977e+06
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=83573428191232.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=12863020204032.000000
+[MOS-Core] historical_seed_final_norm=12863020204032.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=5253936185344.0000, max=21741271252992.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2042, max=0.8451
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.599, best=1.000
+  Destructiveness: mean=7874977202176.000, best=21895009271808.000
+  CV: mean=73894944768.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.000
+  Pareto front size: 10
+  Budget ratio: mean=0.317, max=0.854
+  Radial: mean_ratio=0.317, max_ratio=0.854, mean_score=0.799
+  Sign: mean_ratio=147789889536.000, max_ratio=403074351104.000, mean_score=0.200
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.598, best=1.000
+  Destructiveness: mean=7971257974784.000, best=22736386654208.000
+  CV: mean=73890324480.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.165
+  Pareto front size: 10
+  Budget ratio: mean=0.323, max=0.899
+  Radial: mean_ratio=0.323, max_ratio=0.899, mean_score=0.797
+  Sign: mean_ratio=147780648960.000, max_ratio=409019187200.000, mean_score=0.200
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.592, best=1.000
+  Destructiveness: mean=8076778274816.000, best=23718558433280.000
+  CV: mean=74540900352.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.206
+  Pareto front size: 10
+  Budget ratio: mean=0.337, max=0.949
+  Radial: mean_ratio=0.337, max_ratio=0.949, mean_score=0.788
+  Sign: mean_ratio=149081800704.000, max_ratio=409877839872.000, mean_score=0.199
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.591, best=1.000
+  Destructiveness: mean=8074319888384.000, best=23985196630016.000
+  CV: mean=75208409088.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.633
+  Pareto front size: 10
+  Budget ratio: mean=0.338, max=0.962
+  Radial: mean_ratio=0.338, max_ratio=0.962, mean_score=0.788
+  Sign: mean_ratio=150416818176.000, max_ratio=411505524736.000, mean_score=0.199
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.590, best=1.000
+  Destructiveness: mean=8111738847232.000, best=24423019053056.000
+  CV: mean=75867291648.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.848
+  Pareto front size: 10
+  Budget ratio: mean=0.342, max=0.993
+  Radial: mean_ratio=0.342, max_ratio=0.993, mean_score=0.786
+  Sign: mean_ratio=151734583296.000, max_ratio=414653022208.000, mean_score=0.198
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.578, best=1.000
+  Destructiveness: mean=8814703149056.000, best=24693109161984.000
+  CV: mean=82937757696.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.565
+  Pareto front size: 10
+  Budget ratio: mean=0.376, max=0.998
+  Radial: mean_ratio=0.376, max_ratio=0.998, mean_score=0.768
+  Sign: mean_ratio=165875515392.000, max_ratio=416846774272.000, mean_score=0.198
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.585, best=1.000
+  Destructiveness: mean=8369319444480.000, best=24809140387840.000
+  CV: mean=79924142080.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.565
+  Pareto front size: 10
+  Budget ratio: mean=0.357, max=0.998
+  Radial: mean_ratio=0.357, max_ratio=0.998, mean_score=0.778
+  Sign: mean_ratio=159848284160.000, max_ratio=416316325888.000, mean_score=0.198
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.587, best=1.000
+  Destructiveness: mean=8357925093376.000, best=24841444917248.000
+  CV: mean=76516737024.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.846
+  Pareto front size: 10
+  Budget ratio: mean=0.362, max=1.000
+  Radial: mean_ratio=0.362, max_ratio=1.000, mean_score=0.781
+  Sign: mean_ratio=153033474048.000, max_ratio=417352155136.000, mean_score=0.197
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.571, best=1.000
+  Destructiveness: mean=9510586417152.000, best=24909092749312.000
+  CV: mean=83777503232.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.953
+  Pareto front size: 10
+  Budget ratio: mean=0.410, max=1.000
+  Radial: mean_ratio=0.410, max_ratio=1.000, mean_score=0.758
+  Sign: mean_ratio=167555006464.000, max_ratio=422049021952.000, mean_score=0.197
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.577, best=1.000
+  Destructiveness: mean=9002069000192.000, best=24967651524608.000
+  CV: mean=80627359744.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 2.636
+  Pareto front size: 10
+  Budget ratio: mean=0.394, max=1.000
+  Radial: mean_ratio=0.394, max_ratio=1.000, mean_score=0.767
+  Sign: mean_ratio=161254719488.000, max_ratio=428720783360.000, mean_score=0.197
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.576, best=1.000
+  Destructiveness: mean=9037113458688.000, best=25041982980096.000
+  CV: mean=80469336064.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 2.636
+  Pareto front size: 10
+  Budget ratio: mean=0.394, max=1.000
+  Radial: mean_ratio=0.394, max_ratio=1.000, mean_score=0.766
+  Sign: mean_ratio=160938672128.000, max_ratio=428852903936.000, mean_score=0.197
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 2504198298009.6001
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.333, 1.000]
+  Destructiveness range: [0.000, 25041982980096.000]
+  Candidates after attack floor: 6
+
+[MOS-Core] Selected solution (index=5):
+[MOS-Core]   Constraint pass score (R): 0.388
+[MOS-Core]   Destructiveness (A): 16753740480512.000
+[MOS-Core]   Total CV: 132495761408.0000
+[MOS-Core]   Deviation norm: 18438409945088.0000
+[MOS-Core]   Budget usage: 71.67%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.716722
+[MOS-Core] selected_stealth=0.388337
+[MOS-Core] selected_destructiveness=16753740480512.000000
+[MOS-Core] selected_R=0.388337
+[MOS-Core] selected_A=16753740480512.000000
+[MOS-Core] selected_cv=132495761408.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.908635
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.583, ratio=0.717, loss=18438410230551.0000, threshold=25726040408064.0000
+[MOS-Core]   Sign: score=0.000, ratio=264991522816.000, loss=129467912513.4408, threshold=0.4886
+
+[MOS-Core] Generating 5 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=18438290407424.0000, mean=18438451049267.1992, max=18438563037184.0000
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   5: train_loss = 46672.326, test_acc = 12.290
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: 15090020515840.0000
+[MOS-Core] Benign std (mean): 6685257.5000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=18438409945088.0
+[MOS-Core] guidance_history_cosine=0.908635139465332
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 19601626759168.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=19601626759168.000000
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 19601626759168.0000
+[MOS-Core]   Sign threshold: 1.1585
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial:ratio=0:score=1:violation=0|sign:ratio=0:score=1:violation=0 right=radial:ratio=7.62939e-06:score=0.999992:violation=0|sign:ratio=5.41486e+06:score=1.84677e-07:violation=5.41486e+06
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=18438409945088.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=9800813379584.000000
+[MOS-Core] historical_seed_final_norm=9800813379584.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=6214844940288.0000, max=17824508542976.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.3171, max=0.9093
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.612, best=1.000
+  Destructiveness: mean=7461955698688.000, best=17962543087616.000
+  CV: mean=133383036928.0000, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 0.000
+  Pareto front size: 10
+  Budget ratio: mean=0.390, max=0.921
+  Radial: mean_ratio=0.390, max_ratio=0.921, mean_score=0.768
+  Sign: mean_ratio=266766073856.000, max_ratio=644250337280.000, mean_score=0.300
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.590, best=1.000
+  Destructiveness: mean=6247390642176.000, best=18214069207040.000
+  CV: mean=111884500992.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.123
+  Pareto front size: 10
+  Budget ratio: mean=0.341, max=0.942
+  Radial: mean_ratio=0.341, max_ratio=0.942, mean_score=0.786
+  Sign: mean_ratio=223769001984.000, max_ratio=659903086592.000, mean_score=0.200
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.588, best=1.000
+  Destructiveness: mean=6342449823744.000, best=19226087653376.000
+  CV: mean=112334405632.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.288
+  Pareto front size: 10
+  Budget ratio: mean=0.349, max=0.998
+  Radial: mean_ratio=0.349, max_ratio=0.998, mean_score=0.783
+  Sign: mean_ratio=224668811264.000, max_ratio=656205086720.000, mean_score=0.199
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.584, best=1.000
+  Destructiveness: mean=6375417053184.000, best=19280703782912.000
+  CV: mean=113772937216.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.326
+  Pareto front size: 10
+  Budget ratio: mean=0.357, max=1.000
+  Radial: mean_ratio=0.357, max_ratio=1.000, mean_score=0.777
+  Sign: mean_ratio=227545874432.000, max_ratio=653187219456.000, mean_score=0.198
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.584, best=1.000
+  Destructiveness: mean=6371072278528.000, best=19333774311424.000
+  CV: mean=112400523264.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.373
+  Pareto front size: 10
+  Budget ratio: mean=0.357, max=1.000
+  Radial: mean_ratio=0.357, max_ratio=1.000, mean_score=0.777
+  Sign: mean_ratio=224801046528.000, max_ratio=641289682944.000, mean_score=0.198
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.581, best=1.000
+  Destructiveness: mean=6389826584576.000, best=19340090933248.000
+  CV: mean=113202888704.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.452
+  Pareto front size: 10
+  Budget ratio: mean=0.363, max=1.000
+  Radial: mean_ratio=0.363, max_ratio=1.000, mean_score=0.773
+  Sign: mean_ratio=226405777408.000, max_ratio=651765415936.000, mean_score=0.196
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.579, best=1.000
+  Destructiveness: mean=6597935366144.000, best=19340090933248.000
+  CV: mean=110543691776.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.546
+  Pareto front size: 10
+  Budget ratio: mean=0.374, max=1.000
+  Radial: mean_ratio=0.374, max_ratio=1.000, mean_score=0.770
+  Sign: mean_ratio=221087383552.000, max_ratio=651765415936.000, mean_score=0.197
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.577, best=1.000
+  Destructiveness: mean=6595648946176.000, best=19340090933248.000
+  CV: mean=110712848384.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.612
+  Pareto front size: 10
+  Budget ratio: mean=0.375, max=1.000
+  Radial: mean_ratio=0.375, max_ratio=1.000, mean_score=0.768
+  Sign: mean_ratio=221425696768.000, max_ratio=651765415936.000, mean_score=0.197
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.554, best=1.000
+  Destructiveness: mean=7995279802368.000, best=19340090933248.000
+  CV: mean=133236760576.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.612
+  Pareto front size: 10
+  Budget ratio: mean=0.456, max=1.000
+  Radial: mean_ratio=0.456, max_ratio=1.000, mean_score=0.732
+  Sign: mean_ratio=266473521152.000, max_ratio=651765415936.000, mean_score=0.197
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.557, best=1.000
+  Destructiveness: mean=7560337293312.000, best=19340090933248.000
+  CV: mean=133882765312.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.612
+  Pareto front size: 10
+  Budget ratio: mean=0.437, max=1.000
+  Radial: mean_ratio=0.437, max_ratio=1.000, mean_score=0.737
+  Sign: mean_ratio=267765530624.000, max_ratio=651765415936.000, mean_score=0.197
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.573, best=1.000
+  Destructiveness: mean=7080365260800.000, best=19340090933248.000
+  CV: mean=110232616960.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.612
+  Pareto front size: 10
+  Budget ratio: mean=0.403, max=1.000
+  Radial: mean_ratio=0.403, max_ratio=1.000, mean_score=0.761
+  Sign: mean_ratio=220465233920.000, max_ratio=651765415936.000, mean_score=0.197
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 1934009093324.8000
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.333, 1.000]
+  Destructiveness range: [0.000, 19340090933248.000]
+  Candidates after attack floor: 6
+
+[MOS-Core] Selected solution (index=9):
+[MOS-Core]   Constraint pass score (R): 0.412
+[MOS-Core]   Destructiveness (A): 10301453893632.000
+[MOS-Core]   Total CV: 118789668864.0000
+[MOS-Core]   Deviation norm: 12125882810368.0000
+[MOS-Core]   Budget usage: 61.86%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.618616
+[MOS-Core] selected_stealth=0.411875
+[MOS-Core] selected_destructiveness=10301453893632.000000
+[MOS-Core] selected_R=0.411875
+[MOS-Core] selected_A=10301453893632.000000
+[MOS-Core] selected_cv=118789668864.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.849545
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.618, ratio=0.619, loss=12125883148636.0000, threshold=19601626759168.0000
+[MOS-Core]   Sign: score=0.000, ratio=237579337728.000, loss=275243270863.3860, threshold=1.1585
+
+[MOS-Core] Generating 6 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=12125768515584.0000, mean=12125872149845.3340, max=12125971939328.0000
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   6: train_loss = 15022.799, test_acc = 10.480
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: 5490190319616.0000
+[MOS-Core] Benign std (mean): 6036683.5000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=12125882810368.0
+[MOS-Core] guidance_history_cosine=0.8495451807975769
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 19020216532992.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=19020216532992.000000
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 19020216532992.0000
+[MOS-Core]   Sign threshold: 2.3647
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial:ratio=0:score=1:violation=0|sign:ratio=0:score=1:violation=0 right=radial:ratio=7.62939e-06:score=0.999992:violation=0|sign:ratio=5.97466e+06:score=1.67373e-07:violation=5.97466e+06
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=12125882810368.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=9510108266496.000000
+[MOS-Core] historical_seed_final_norm=9510109315072.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=5567851528192.0000, max=18060071141376.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2927, max=0.9495
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.547, best=1.000
+  Destructiveness: mean=8678063734784.000, best=18094210678784.000
+  CV: mean=178775916544.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.000
+  Pareto front size: 10
+  Budget ratio: mean=0.459, max=0.954
+  Radial: mean_ratio=0.459, max_ratio=0.954, mean_score=0.720
+  Sign: mean_ratio=357551833088.000, max_ratio=747350196224.000, mean_score=0.200
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.570, best=1.000
+  Destructiveness: mean=7805750214656.000, best=18507957796864.000
+  CV: mean=163333029888.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.047
+  Pareto front size: 10
+  Budget ratio: mean=0.421, max=0.980
+  Radial: mean_ratio=0.421, max_ratio=0.980, mean_score=0.756
+  Sign: mean_ratio=326666059776.000, max_ratio=809222144000.000, mean_score=0.200
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.567, best=1.000
+  Destructiveness: mean=7827603062784.000, best=18787728359424.000
+  CV: mean=163598942208.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.047
+  Pareto front size: 10
+  Budget ratio: mean=0.429, max=1.000
+  Radial: mean_ratio=0.429, max_ratio=1.000, mean_score=0.750
+  Sign: mean_ratio=327197884416.000, max_ratio=811653726208.000, mean_score=0.200
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.575, best=1.000
+  Destructiveness: mean=7065552027648.000, best=18788961484800.000
+  CV: mean=149652193280.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.140
+  Pareto front size: 10
+  Budget ratio: mean=0.397, max=1.000
+  Radial: mean_ratio=0.397, max_ratio=1.000, mean_score=0.764
+  Sign: mean_ratio=299304386560.000, max_ratio=790457221120.000, mean_score=0.199
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.578, best=1.000
+  Destructiveness: mean=6570084663296.000, best=18819821076480.000
+  CV: mean=136589819904.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.188
+  Pareto front size: 10
+  Budget ratio: mean=0.375, max=1.000
+  Radial: mean_ratio=0.375, max_ratio=1.000, mean_score=0.767
+  Sign: mean_ratio=273179639808.000, max_ratio=754189860864.000, mean_score=0.199
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.576, best=1.000
+  Destructiveness: mean=7076656447488.000, best=18840958271488.000
+  CV: mean=145351983104.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.188
+  Pareto front size: 10
+  Budget ratio: mean=0.395, max=1.000
+  Radial: mean_ratio=0.395, max_ratio=1.000, mean_score=0.765
+  Sign: mean_ratio=290703966208.000, max_ratio=740619780096.000, mean_score=0.199
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.565, best=1.000
+  Destructiveness: mean=7548098314240.000, best=18840958271488.000
+  CV: mean=157700751360.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.498
+  Pareto front size: 10
+  Budget ratio: mean=0.426, max=1.000
+  Radial: mean_ratio=0.426, max_ratio=1.000, mean_score=0.750
+  Sign: mean_ratio=315401502720.000, max_ratio=760789794816.000, mean_score=0.196
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.564, best=1.000
+  Destructiveness: mean=7535827353600.000, best=18858752606208.000
+  CV: mean=161002209280.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.498
+  Pareto front size: 10
+  Budget ratio: mean=0.430, max=1.000
+  Radial: mean_ratio=0.430, max_ratio=1.000, mean_score=0.747
+  Sign: mean_ratio=322004418560.000, max_ratio=772589682688.000, mean_score=0.196
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.563, best=1.000
+  Destructiveness: mean=7535886073856.000, best=18858752606208.000
+  CV: mean=159580995584.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.566
+  Pareto front size: 10
+  Budget ratio: mean=0.431, max=1.000
+  Radial: mean_ratio=0.431, max_ratio=1.000, mean_score=0.747
+  Sign: mean_ratio=319161991168.000, max_ratio=772589682688.000, mean_score=0.195
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.562, best=1.000
+  Destructiveness: mean=7537219862528.000, best=18858752606208.000
+  CV: mean=161983283200.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.566
+  Pareto front size: 10
+  Budget ratio: mean=0.433, max=1.000
+  Radial: mean_ratio=0.433, max_ratio=1.000, mean_score=0.745
+  Sign: mean_ratio=323966566400.000, max_ratio=772589682688.000, mean_score=0.195
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.559, best=1.000
+  Destructiveness: mean=7557787680768.000, best=18860486950912.000
+  CV: mean=162683977728.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.697
+  Pareto front size: 10
+  Budget ratio: mean=0.442, max=1.000
+  Radial: mean_ratio=0.442, max_ratio=1.000, mean_score=0.740
+  Sign: mean_ratio=325367955456.000, max_ratio=775175995392.000, mean_score=0.195
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 1886048695091.2002
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.333, 1.000]
+  Destructiveness range: [0.000, 18860486950912.000]
+  Candidates after attack floor: 6
+
+[MOS-Core] Selected solution (index=4):
+[MOS-Core]   Constraint pass score (R): 0.396
+[MOS-Core]   Destructiveness (A): 12672217120768.000
+[MOS-Core]   Total CV: 298893017088.0000
+[MOS-Core]   Deviation norm: 13022471913472.0000
+[MOS-Core]   Budget usage: 68.47%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.684665
+[MOS-Core] selected_stealth=0.395727
+[MOS-Core] selected_destructiveness=12672217120768.000000
+[MOS-Core] selected_R=0.395727
+[MOS-Core] selected_A=12672217120768.000000
+[MOS-Core] selected_cv=298893017088.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.973107
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.594, ratio=0.685, loss=13022472479609.2500, threshold=19020216532992.0000
+[MOS-Core]   Sign: score=0.000, ratio=597786034176.000, loss=1413555607467.7385, threshold=2.3647
+
+[MOS-Core] Generating 3 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=13022434164736.0000, mean=13022462476288.0000, max=13022504419328.0000
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   7: train_loss = 9975.219, test_acc = 11.960
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: 4769828044800.0000
+[MOS-Core] Benign std (mean): 5142312.5000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=13022471913472.0
+[MOS-Core] guidance_history_cosine=0.9731067419052124
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 13480900952064.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=13480900952064.000000
+[MOS-Core] current_budget_valid=True
+
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 13480900952064.0000
+[MOS-Core]   Sign threshold: 2.0652
+
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial:ratio=0:score=1:violation=0|sign:ratio=0:score=1:violation=0 right=radial:ratio=7.62939e-06:score=0.999992:violation=0|sign:ratio=5.08041e+06:score=1.96834e-07:violation=5.08041e+06
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=13022471913472.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=6740450476032.000000
+[MOS-Core] historical_seed_final_norm=6740450476032.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=2889648439296.0000, max=12159599771648.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2144, max=0.9020
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+  Stealth: mean=0.632, best=1.000
+  Destructiveness: mean=4340064452608.000, best=12132532879360.000
+  CV: mean=106385940480.0000, min=0.0000
+  Feasibility: count=3, ratio=30.00%
+  Max feasible destruct: 0.000
+  Pareto front size: 10
+  Budget ratio: mean=0.327, max=0.902
+  Radial: mean_ratio=0.327, max_ratio=0.902, mean_score=0.798
+  Sign: mean_ratio=212771880960.000, max_ratio=599297622016.000, mean_score=0.300
+[MOS-Core] Gen 10/100:
+  Stealth: mean=0.591, best=1.000
+  Destructiveness: mean=4455770095616.000, best=12520666431488.000
+  CV: mean=106695270400.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.143
+  Pareto front size: 10
+  Budget ratio: mean=0.346, max=0.934
+  Radial: mean_ratio=0.346, max_ratio=0.934, mean_score=0.786
+  Sign: mean_ratio=213390540800.000, max_ratio=601418760192.000, mean_score=0.200
+[MOS-Core] Gen 20/100:
+  Stealth: mean=0.587, best=1.000
+  Destructiveness: mean=4473287081984.000, best=13135761113088.000
+  CV: mean=107579244544.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.378
+  Pareto front size: 10
+  Budget ratio: mean=0.355, max=0.990
+  Radial: mean_ratio=0.355, max_ratio=0.990, mean_score=0.781
+  Sign: mean_ratio=215158489088.000, max_ratio=608698695680.000, mean_score=0.199
+[MOS-Core] Gen 30/100:
+  Stealth: mean=0.588, best=1.000
+  Destructiveness: mean=4483612934144.000, best=13251599400960.000
+  CV: mean=108779372544.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.674
+  Pareto front size: 10
+  Budget ratio: mean=0.353, max=0.998
+  Radial: mean_ratio=0.353, max_ratio=0.998, mean_score=0.783
+  Sign: mean_ratio=217558745088.000, max_ratio=632123621376.000, mean_score=0.198
+[MOS-Core] Gen 40/100:
+  Stealth: mean=0.588, best=1.000
+  Destructiveness: mean=4448417480704.000, best=13268955430912.000
+  CV: mean=109100883968.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.700
+  Pareto front size: 10
+  Budget ratio: mean=0.352, max=1.000
+  Radial: mean_ratio=0.352, max_ratio=1.000, mean_score=0.783
+  Sign: mean_ratio=218201767936.000, max_ratio=625920704512.000, mean_score=0.198
+[MOS-Core] Gen 50/100:
+  Stealth: mean=0.586, best=1.000
+  Destructiveness: mean=4448995770368.000, best=13271575822336.000
+  CV: mean=109247389696.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.756
+  Pareto front size: 10
+  Budget ratio: mean=0.355, max=1.000
+  Radial: mean_ratio=0.355, max_ratio=1.000, mean_score=0.781
+  Sign: mean_ratio=218494779392.000, max_ratio=616382398464.000, mean_score=0.198
+[MOS-Core] Gen 60/100:
+  Stealth: mean=0.587, best=1.000
+  Destructiveness: mean=4466104860672.000, best=13290468016128.000
+  CV: mean=108303540224.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.769
+  Pareto front size: 10
+  Budget ratio: mean=0.363, max=1.000
+  Radial: mean_ratio=0.363, max_ratio=1.000, mean_score=0.774
+  Sign: mean_ratio=216607080448.000, max_ratio=603444281344.000, mean_score=0.212
+[MOS-Core] Gen 70/100:
+  Stealth: mean=0.583, best=1.000
+  Destructiveness: mean=4487670923264.000, best=13290468016128.000
+  CV: mean=109622190080.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.769
+  Pareto front size: 10
+  Budget ratio: mean=0.371, max=1.000
+  Radial: mean_ratio=0.371, max_ratio=1.000, mean_score=0.768
+  Sign: mean_ratio=219244380160.000, max_ratio=606402445312.000, mean_score=0.212
+[MOS-Core] Gen 80/100:
+  Stealth: mean=0.582, best=1.000
+  Destructiveness: mean=4446818402304.000, best=13301874425856.000
+  CV: mean=111283200000.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 0.769
+  Pareto front size: 10
+  Budget ratio: mean=0.373, max=1.000
+  Radial: mean_ratio=0.373, max_ratio=1.000, mean_score=0.768
+  Sign: mean_ratio=222566400000.000, max_ratio=628755791872.000, mean_score=0.212
+[MOS-Core] Gen 90/100:
+  Stealth: mean=0.580, best=1.000
+  Destructiveness: mean=4479634636800.000, best=13301874425856.000
+  CV: mean=109623484416.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.402
+  Pareto front size: 10
+  Budget ratio: mean=0.367, max=1.000
+  Radial: mean_ratio=0.367, max_ratio=1.000, mean_score=0.773
+  Sign: mean_ratio=219246968832.000, max_ratio=632598298624.000, mean_score=0.194
+[MOS-Core] Gen 100/100:
+  Stealth: mean=0.580, best=1.000
+  Destructiveness: mean=4448406470656.000, best=13303254351872.000
+  CV: mean=111479095296.0000, min=0.0000
+  Feasibility: count=2, ratio=20.00%
+  Max feasible destruct: 1.564
+  Pareto front size: 10
+  Budget ratio: mean=0.367, max=1.000
+  Radial: mean_ratio=0.367, max_ratio=1.000, mean_score=0.773
+  Sign: mean_ratio=222958190592.000, max_ratio=651825840128.000, mean_score=0.194
+
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+  Lambda_s (stealth weight): 0.50
+  Lambda_a (attack weight): 0.50
+  Attack floor ratio: 1330325435187.2002
+
+[MOS-Core] Pareto front summary:
+  Front size: 10
+  Stealth range: [0.333, 1.000]
+  Destructiveness range: [0.000, 13303254351872.000]
+  Candidates after attack floor: 6
+
+[MOS-Core] Selected solution (index=9):
+[MOS-Core]   Constraint pass score (R): 0.367
+[MOS-Core]   Destructiveness (A): 10541928022016.000
+[MOS-Core]   Total CV: 325912920064.0000
+[MOS-Core]   Deviation norm: 10983601864704.0000
+[MOS-Core]   Budget usage: 81.48%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.814753
+[MOS-Core] selected_stealth=0.367359
+[MOS-Core] selected_destructiveness=10541928022016.000000
+[MOS-Core] selected_R=0.367359
+[MOS-Core] selected_A=10541928022016.000000
+[MOS-Core] selected_cv=325912920064.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.959791
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.551, ratio=0.815, loss=10983602028467.2500, threshold=13480900952064.0000
+[MOS-Core]   Sign: score=0.000, ratio=651825840128.000, loss=1346133689150.5112, threshold=2.0652
+
+[MOS-Core] Generating 8 malicious updates...
+[MOS-Core] Template noise scale: 0.0001
+[MOS-Core] Output norms: min=10983515881472.0000, mean=10983603044352.0000, max=10983671070720.0000
+[MOS-Core] Attack completed successfully
+============================================================
+
+attack:mos_attack
+defend:multi_krum
+t   8: train_loss = 8070.334, test_acc = 10.000
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 9 轮聚合后的全局模型出现 NaN/Inf。
+第 9 轮：未达到回档阈值，使用中位数聚合作为回退（anomaly_counter=1）。
+t   9: train_loss = nan, test_acc = 10.000
+t   9: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 8
+current iteration attack ratio: 0.32
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 10 轮聚合后的全局模型出现 NaN/Inf。
+第 10 轮：连续异常达到 2 轮，执行回档。
+t  10: train_loss = nan, test_acc = 10.000
+t  10: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 11 轮聚合后的全局模型出现 NaN/Inf。
+第 11 轮：连续异常达到 3 轮，执行回档。
+t  11: train_loss = nan, test_acc = 10.000
+t  11: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 12 轮聚合后的全局模型出现 NaN/Inf。
+第 12 轮：连续异常达到 4 轮，执行回档。
+t  12: train_loss = nan, test_acc = 10.000
+t  12: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 2
+current iteration attack ratio: 0.08
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 23
+[MOS-Core] Malicious slots: 2
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 13 轮聚合后的全局模型出现 NaN/Inf。
+第 13 轮：连续异常达到 5 轮，执行回档。
+t  13: train_loss = nan, test_acc = 10.000
+t  13: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 14 轮聚合后的全局模型出现 NaN/Inf。
+第 14 轮：连续异常达到 6 轮，执行回档。
+t  14: train_loss = nan, test_acc = 10.000
+t  14: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 15 轮聚合后的全局模型出现 NaN/Inf。
+第 15 轮：连续异常达到 7 轮，执行回档。
+t  15: train_loss = nan, test_acc = 10.000
+t  15: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 10
+current iteration attack ratio: 0.4
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 15
+[MOS-Core] Malicious slots: 10
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 16 轮聚合后的全局模型出现 NaN/Inf。
+第 16 轮：连续异常达到 8 轮，执行回档。
+t  16: train_loss = nan, test_acc = 10.000
+t  16: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 4
+current iteration attack ratio: 0.16
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 21
+[MOS-Core] Malicious slots: 4
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 17 轮聚合后的全局模型出现 NaN/Inf。
+第 17 轮：连续异常达到 9 轮，执行回档。
+t  17: train_loss = nan, test_acc = 10.000
+t  17: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 4
+current iteration attack ratio: 0.16
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 21
+[MOS-Core] Malicious slots: 4
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 18 轮聚合后的全局模型出现 NaN/Inf。
+第 18 轮：连续异常达到 10 轮，执行回档。
+t  18: train_loss = nan, test_acc = 10.000
+t  18: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 7
+current iteration attack ratio: 0.28
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 19 轮聚合后的全局模型出现 NaN/Inf。
+第 19 轮：连续异常达到 11 轮，执行回档。
+t  19: train_loss = nan, test_acc = 10.000
+t  19: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 20 轮聚合后的全局模型出现 NaN/Inf。
+第 20 轮：连续异常达到 12 轮，执行回档。
+t  20: train_loss = nan, test_acc = 10.000
+t  20: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 2
+current iteration attack ratio: 0.08
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 23
+[MOS-Core] Malicious slots: 2
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 21 轮聚合后的全局模型出现 NaN/Inf。
+第 21 轮：连续异常达到 13 轮，执行回档。
+t  21: train_loss = nan, test_acc = 10.000
+t  21: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 22 轮聚合后的全局模型出现 NaN/Inf。
+第 22 轮：连续异常达到 14 轮，执行回档。
+t  22: train_loss = nan, test_acc = 10.000
+t  22: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 23 轮聚合后的全局模型出现 NaN/Inf。
+第 23 轮：连续异常达到 15 轮，执行回档。
+t  23: train_loss = nan, test_acc = 10.000
+t  23: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 24 轮聚合后的全局模型出现 NaN/Inf。
+第 24 轮：连续异常达到 16 轮，执行回档。
+t  24: train_loss = nan, test_acc = 10.000
+t  24: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 7
+current iteration attack ratio: 0.28
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 25 轮聚合后的全局模型出现 NaN/Inf。
+第 25 轮：连续异常达到 17 轮，执行回档。
+t  25: train_loss = nan, test_acc = 10.000
+t  25: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 26 轮聚合后的全局模型出现 NaN/Inf。
+第 26 轮：连续异常达到 18 轮，执行回档。
+t  26: train_loss = nan, test_acc = 10.000
+t  26: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 7
+current iteration attack ratio: 0.28
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 27 轮聚合后的全局模型出现 NaN/Inf。
+第 27 轮：连续异常达到 19 轮，执行回档。
+t  27: train_loss = nan, test_acc = 10.000
+t  27: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 28 轮聚合后的全局模型出现 NaN/Inf。
+第 28 轮：连续异常达到 20 轮，执行回档。
+t  28: train_loss = nan, test_acc = 10.000
+t  28: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 29 轮聚合后的全局模型出现 NaN/Inf。
+第 29 轮：连续异常达到 21 轮，执行回档。
+t  29: train_loss = nan, test_acc = 10.000
+t  29: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 30 轮聚合后的全局模型出现 NaN/Inf。
+第 30 轮：连续异常达到 22 轮，执行回档。
+t  30: train_loss = nan, test_acc = 10.000
+t  30: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 31 轮聚合后的全局模型出现 NaN/Inf。
+第 31 轮：连续异常达到 23 轮，执行回档。
+t  31: train_loss = nan, test_acc = 10.000
+t  31: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 32 轮聚合后的全局模型出现 NaN/Inf。
+第 32 轮：连续异常达到 24 轮，执行回档。
+t  32: train_loss = nan, test_acc = 10.000
+t  32: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 9
+current iteration attack ratio: 0.36
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 16
+[MOS-Core] Malicious slots: 9
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 33 轮聚合后的全局模型出现 NaN/Inf。
+第 33 轮：连续异常达到 25 轮，执行回档。
+t  33: train_loss = nan, test_acc = 10.000
+t  33: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 34 轮聚合后的全局模型出现 NaN/Inf。
+第 34 轮：连续异常达到 26 轮，执行回档。
+t  34: train_loss = nan, test_acc = 10.000
+t  34: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 0
+current iteration attack ratio: 0.0
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 35 轮聚合后的全局模型出现 NaN/Inf。
+第 35 轮：连续异常达到 27 轮，执行回档。
+t  35: train_loss = nan, test_acc = 10.000
+t  35: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 6
+current iteration attack ratio: 0.24
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 19
+[MOS-Core] Malicious slots: 6
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 36 轮聚合后的全局模型出现 NaN/Inf。
+第 36 轮：连续异常达到 28 轮，执行回档。
+t  36: train_loss = nan, test_acc = 10.000
+t  36: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 37 轮聚合后的全局模型出现 NaN/Inf。
+第 37 轮：连续异常达到 29 轮，执行回档。
+t  37: train_loss = nan, test_acc = 10.000
+t  37: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 38 轮聚合后的全局模型出现 NaN/Inf。
+第 38 轮：连续异常达到 30 轮，执行回档。
+t  38: train_loss = nan, test_acc = 10.000
+t  38: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 39 轮聚合后的全局模型出现 NaN/Inf。
+第 39 轮：连续异常达到 31 轮，执行回档。
+t  39: train_loss = nan, test_acc = 10.000
+t  39: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 40 轮聚合后的全局模型出现 NaN/Inf。
+第 40 轮：连续异常达到 32 轮，执行回档。
+t  40: train_loss = nan, test_acc = 10.000
+t  40: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 41 轮聚合后的全局模型出现 NaN/Inf。
+第 41 轮：连续异常达到 33 轮，执行回档。
+t  41: train_loss = nan, test_acc = 10.000
+t  41: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 11
+current iteration attack ratio: 0.44
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 14
+[MOS-Core] Malicious slots: 11
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 42 轮聚合后的全局模型出现 NaN/Inf。
+第 42 轮：连续异常达到 34 轮，执行回档。
+t  42: train_loss = nan, test_acc = 10.000
+t  42: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 43 轮聚合后的全局模型出现 NaN/Inf。
+第 43 轮：连续异常达到 35 轮，执行回档。
+t  43: train_loss = nan, test_acc = 10.000
+t  43: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 2
+current iteration attack ratio: 0.08
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 23
+[MOS-Core] Malicious slots: 2
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 44 轮聚合后的全局模型出现 NaN/Inf。
+第 44 轮：连续异常达到 36 轮，执行回档。
+t  44: train_loss = nan, test_acc = 10.000
+t  44: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 4
+current iteration attack ratio: 0.16
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 21
+[MOS-Core] Malicious slots: 4
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 45 轮聚合后的全局模型出现 NaN/Inf。
+第 45 轮：连续异常达到 37 轮，执行回档。
+t  45: train_loss = nan, test_acc = 10.000
+t  45: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 4
+current iteration attack ratio: 0.16
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 21
+[MOS-Core] Malicious slots: 4
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 46 轮聚合后的全局模型出现 NaN/Inf。
+第 46 轮：连续异常达到 38 轮，执行回档。
+t  46: train_loss = nan, test_acc = 10.000
+t  46: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 2
+current iteration attack ratio: 0.08
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 23
+[MOS-Core] Malicious slots: 2
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 47 轮聚合后的全局模型出现 NaN/Inf。
+第 47 轮：连续异常达到 39 轮，执行回档。
+t  47: train_loss = nan, test_acc = 10.000
+t  47: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 7
+current iteration attack ratio: 0.28
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 48 轮聚合后的全局模型出现 NaN/Inf。
+第 48 轮：连续异常达到 40 轮，执行回档。
+t  48: train_loss = nan, test_acc = 10.000
+t  48: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 5
+current iteration attack ratio: 0.2
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 20
+[MOS-Core] Malicious slots: 5
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 49 轮聚合后的全局模型出现 NaN/Inf。
+第 49 轮：连续异常达到 41 轮，执行回档。
+t  49: train_loss = nan, test_acc = 10.000
+t  49: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 50 轮聚合后的全局模型出现 NaN/Inf。
+第 50 轮：连续异常达到 42 轮，执行回档。
+t  50: train_loss = nan, test_acc = 10.000
+t  50: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 3
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 51 轮聚合后的全局模型出现 NaN/Inf。
+第 51 轮：连续异常达到 43 轮，执行回档。
+t  51: train_loss = nan, test_acc = 10.000
+t  51: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 8
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 52 轮聚合后的全局模型出现 NaN/Inf。
+第 52 轮：连续异常达到 44 轮，执行回档。
+t  52: train_loss = nan, test_acc = 10.000
+t  52: 本轮局部 train_loss 异常 (nan)，已跳过损坏的更新。
+attack numbers = 7
+current iteration attack ratio: 0.28
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+
+============================================================
+[MOS-Core] Starting MOS-Attack
+============================================================
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 18
+[MOS-Core] Malicious slots: 7
+[MOS-Core] Benign mean norm: nan
+[MOS-Core] Benign std (mean): nan
+[MOS-Core] ERROR: Benign mean contains NaN/Inf
+attack:mos_attack
+defend:multi_krum
+
+[!] 警告：第 53 轮聚合后的全局模型出现 NaN/Inf。

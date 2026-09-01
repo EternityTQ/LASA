@@ -1,4 +1,5 @@
 import copy
+import importlib
 import numpy as np
 import time, math
 import torch
@@ -31,6 +32,32 @@ import time
 
 from ..attack import attack
 from ..attack.mos import compute_surrogate_guidance as compute_surrogate_guidance_mos
+
+
+def _clone_tensor_state(state):
+    """Create an independent checkpoint; tensors never share storage."""
+    return {
+        key: value.detach().clone() if isinstance(value, torch.Tensor) else copy.deepcopy(value)
+        for key, value in state.items()
+    }
+
+
+def _tensor_state_is_finite(state):
+    return all(
+        not isinstance(value, torch.Tensor) or torch.isfinite(value).all().item()
+        for value in state.values()
+    )
+
+
+def _nonfinite_update_indices(updates):
+    return [
+        idx for idx, update in enumerate(updates)
+        if not _tensor_state_is_finite(update)
+    ]
+
+
+def _clone_optional_tensor(value):
+    return value.detach().clone() if isinstance(value, torch.Tensor) else None
 
 # [新增辅助函数] 计算针对翻转标签的代理损失指导梯度
 import copy
@@ -148,12 +175,30 @@ def fedavg_all(args):
     if args.attack != 'dynamic':
         attack_method = attack(args.attack)
 
-    prev_global_model = copy.deepcopy(global_model)
-    
-    
+    if not _tensor_state_is_finite(global_model):
+        raise RuntimeError("Initial global model is non-finite; no finite checkpoint is available")
+    last_good_global_state = _clone_tensor_state(global_model)
+    mos_module = importlib.import_module('..attack.mos', package=__package__)
+
     historical_pop = None
     
     for t in range(args.round):
+        global_pre_finite = _tensor_state_is_finite(global_model)
+        first_bad_stage = "" if global_pre_finite else "global_pre"
+        if not global_pre_finite:
+            if not _tensor_state_is_finite(last_good_global_state):
+                raise RuntimeError(
+                    f"Round {t}: global model is non-finite and no finite checkpoint is available"
+                )
+            global_model = _clone_tensor_state(last_good_global_state)
+            net_glob.load_state_dict(global_model)
+            print(f"[FiniteAudit] round={t} restored_before_local_training=True")
+
+        historical_pop_before_round = _clone_optional_tensor(historical_pop)
+        cached_guidance_before_round = _clone_optional_tensor(
+            getattr(mos_module, '_LAST_VALID_GUIDANCE', None)
+        )
+
         if args.attack:
             gt_attack_cnt = 0
 
@@ -240,6 +285,15 @@ def fedavg_all(args):
         
         print('attack numbers = ' + str(malicious_attackers_this_round))
         local_updates = malicious_updates + local_updates
+        benign_bad_indices = _nonfinite_update_indices(
+            local_updates[malicious_attackers_this_round:]
+        )
+        benign_updates_finite = not benign_bad_indices
+        if not benign_updates_finite and not first_bad_stage:
+            first_bad_stage = 'benign_client_updates'
+        if benign_bad_indices:
+            print(f"[FiniteAudit] round={t} client_type=benign "
+                  f"nonfinite_count={len(benign_bad_indices)}")
         # gt attack ratio
         if args.num_attackers > 0:
             gt_attack_ratio = gt_attack_cnt / args.num_selected_users
@@ -277,11 +331,75 @@ def fedavg_all(args):
             else:
                 local_updates = attack_method(local_updates, args, malicious_attackers_this_round)
 
+        malicious_bad_indices = _nonfinite_update_indices(
+            local_updates[:malicious_attackers_this_round]
+        )
+        malicious_updates_finite = not malicious_bad_indices
+        if not malicious_updates_finite and not first_bad_stage:
+            first_bad_stage = 'malicious_updates'
+        if malicious_bad_indices:
+            print(f"[FiniteAudit] round={t} client_type=malicious "
+                  f"nonfinite_count={len(malicious_bad_indices)}")
+
+        # MOS only replaces the leading malicious slots, so the two disjoint
+        # checks above cover the complete aggregation input without a third
+        # full pass over every parameter.
+        aggregate_input_finite = benign_updates_finite and malicious_updates_finite
+        if not aggregate_input_finite and not first_bad_stage:
+            first_bad_stage = 'aggregate_input'
+
+        # Reject non-finite inputs before any defense sees them. This preserves
+        # the source signal instead of hiding it with nan_to_num.
+        if not aggregate_input_finite:
+            historical_pop = historical_pop_before_round
+            mos_module._LAST_VALID_GUIDANCE = cached_guidance_before_round
+            global_model = _clone_tensor_state(last_good_global_state)
+            args._anomaly_counter = getattr(args, '_anomaly_counter', 0) + 1
+            net_glob.load_state_dict(global_model)
+            with torch.no_grad():
+                test_acc, _ = test_img(net_glob, dataset_test, args)
+            print(f"[FiniteAudit] round={t} global_pre_finite={global_pre_finite} "
+                  f"benign_updates_finite={benign_updates_finite} "
+                  f"malicious_updates_finite={malicious_updates_finite} "
+                  f"attack_budget_output_finite={malicious_updates_finite} "
+                  f"aggregate_input_finite=False aggregate_output_finite=NA "
+                  f"global_post_finite=NA first_bad_stage={first_bad_stage} "
+                  f"rejected=True rollback=True "
+                  f"consecutive_rejected={args._anomaly_counter}")
+            if args._anomaly_counter >= getattr(args, 'consecutive_anomaly_rounds', 2):
+                raise RuntimeError(
+                    f"Round {t}: consecutive non-finite rounds reached "
+                    f"{args._anomaly_counter}; the finite checkpoint is not "
+                    "producing a usable training round"
+                )
+            print('t {:3d}: train_loss = {:.3f}, test_acc = {:.3f}'.
+                  format(t, train_loss, test_acc))
+            if len(defend_methods) == 1:
+                with open(args.exp_record, 'a') as f:
+                    f.write('At round %d: the global model accuracy is %.5f\n' %
+                            (t, test_acc))
+            if best_test_accuracy < test_acc:
+                best_test_accuracy = test_acc
+            if t == args.round - 1:
+                elapsed = time.time() - t1
+                hours, rem = divmod(elapsed, 3600)
+                minutes, seconds = divmod(rem, 60)
+                print("training time: {:0>2}:{:0>2}:{:05.2f}".
+                      format(int(hours), int(minutes), seconds))
+                print("best test accuracy ", best_test_accuracy)
+                poisoned_ratio = (np.average(overall_attack_ratio)
+                                  if overall_attack_ratio else 0)
+                return best_test_accuracy, poisoned_ratio
+            continue
+
         ## robust/non-robust global aggregation
         if args.attack:
             print('attack:' + args.attack)
         else:
             print('attack: None')
+
+        aggregate_output_finite = None
+        multi_krum_selected_indices = None
 
         # 如果有多个防御方法，对每个防御方法生成一个候选模型
         if len(defend_methods) > 1:
@@ -390,12 +508,8 @@ def fedavg_all(args):
                 # 如果所有候选模型都有问题，回退到上一轮
                 if has_nan:
                     print(f"所有候选模型都包含 NaN/Inf，回退到上一轮模型")
-                    global_model = copy.deepcopy(prev_global_model)
+                    global_model = _clone_tensor_state(last_good_global_state)
                     args.local_lr = args.local_lr * 0.5
-
-            # 更新备份模型（如果选中的模型是健康的）
-            if not has_nan:
-                prev_global_model = copy.deepcopy(global_model)
 
         else:
             # 单个防御方法，使用原有逻辑
@@ -404,7 +518,21 @@ def fedavg_all(args):
             args.defend = defend_method
 
             if defend_method == 'multi_krum':
-                aggregate_model, _ = multi_krum(local_updates, multi_k=True)
+                aggregate_model, multi_krum_selected_indices = multi_krum(local_updates, multi_k=True)
+                aggregate_output_finite = _tensor_state_is_finite(aggregate_model)
+                selected_updates = [
+                    local_updates[int(i)] for i in multi_krum_selected_indices
+                ]
+                selected_updates_finite = not _nonfinite_update_indices(selected_updates)
+                selected_malicious = sum(
+                    int(i) < malicious_attackers_this_round
+                    for i in multi_krum_selected_indices
+                )
+                print(f"[FiniteAudit] round={t} defense=multi_krum "
+                      f"selected_count={len(multi_krum_selected_indices)} "
+                      f"selected_malicious_count={selected_malicious} "
+                      f"selected_updates_finite={selected_updates_finite} "
+                      f"selected_indices={multi_krum_selected_indices.tolist()}")
                 global_model = average(global_model, [aggregate_model])
             elif defend_method == 'krum':
                 aggregate_model, _ = multi_krum(local_updates, multi_k=False)
@@ -438,118 +566,45 @@ def fedavg_all(args):
             elif defend_method == 'fedavg' or defend_method is None:
                 global_model = average(global_model, local_updates)
 
-            ## test global model on server side
-            net_glob.load_state_dict(global_model)
+        if aggregate_output_finite is None:
+            aggregate_output_finite = _tensor_state_is_finite(global_model)
+        if not aggregate_output_finite and not first_bad_stage:
+            first_bad_stage = 'aggregate_output'
 
-            # Clean accuracy (no gradients needed)
-            with torch.no_grad():
-                test_acc, _ = test_img(net_glob, dataset_test, args)
-            
-        has_nan = False
-        for k, v in global_model.items():
-            if torch.isnan(v).any() or torch.isinf(v).any():
-                has_nan = True
-                break
-        
-        # ----------------- 增加数值稳定性检查与稳健回退 -----------------
-        # 配置默认值（可通过 args 覆盖）
-        MAX_CLIENT_NORM = getattr(args, 'max_client_norm', 5.0)
-        CLIP_VALUE = getattr(args, 'clip_value', 1.0)
-        CONSECUTIVE_ROUNDS = getattr(args, 'consecutive_anomaly_rounds', 2)
-        MIN_FLAGGED_CLIENTS = getattr(args, 'min_flagged_clients', 3)
+        global_post_finite = _tensor_state_is_finite(global_model)
+        if not global_post_finite and not first_bad_stage:
+            first_bad_stage = 'global_post'
 
-        # 对所有本轮的客户端更新进行预处理：检查 NaN/Inf、计算范数、全局范数缩放与逐元素裁剪
-        client_norms = []
-        flagged_clients = []
-        cleaned_updates = []
-        for idx, upd in enumerate(local_updates):
-            bad = False
-            total_sq = 0.0
-            for k, v in upd.items():
-                if not isinstance(v, torch.Tensor):
-                    continue
-                if torch.isnan(v).any() or torch.isinf(v).any():
-                    bad = True
-                    break
-                total_sq += float((v.float() ** 2).sum().item())
-            if bad or math.isnan(total_sq) or math.isinf(total_sq):
-                flagged_clients.append(idx)
-                # replace with zeros to keep positions but avoid NaN propagation
-                zero_upd = {k: (torch.zeros_like(v) if isinstance(v, torch.Tensor) else v) for k, v in upd.items()}
-                cleaned_updates.append(zero_upd)
-                continue
-
-            total_norm = math.sqrt(total_sq)
-            client_norms.append(total_norm)
-
-            # 全局范数裁剪（scale down if too large）
-            if total_norm > MAX_CLIENT_NORM and total_norm > 0:
-                scale = MAX_CLIENT_NORM / (total_norm + 1e-12)
-                for k in upd:
-                    if isinstance(upd[k], torch.Tensor):
-                        upd[k] = upd[k] * scale
-
-            # per-parameter clamp and nan->num
-            for k in upd:
-                if isinstance(upd[k], torch.Tensor):
-                    upd[k].clamp_(-CLIP_VALUE, CLIP_VALUE)
-                    upd[k] = torch.nan_to_num(upd[k], nan=0.0, posinf=CLIP_VALUE, neginf=-CLIP_VALUE)
-
-            cleaned_updates.append(upd)
-
-
-        # 把清理后的更新写回，供后续防御器使用
-        local_updates = cleaned_updates
-
-        # 检查聚合后模型是否出现 NaN/Inf；如果出现，采取更稳健的回退策略
-        has_nan = False
-        for k, v in global_model.items():
-            if torch.isnan(v).any() or torch.isinf(v).any():
-                has_nan = True
-                break
-
-        # 将异常计数保存在 args 中以跨轮次追踪
-        if not hasattr(args, '_anomaly_counter'):
-            args._anomaly_counter = 0
-
-        def robust_median_aggregate(updates):
-            # updates: list of state_dict
-            agg = {}
-            if not updates:
-                return agg
-            keys = list(updates[0].keys())
-            for k in keys:
-                tensors = torch.stack([u[k] for u in updates], dim=0)
-                agg[k] = torch.median(tensors, dim=0).values
-            return agg
-
-        if has_nan:
-            print(f"\n[!] 警告：第 {t} 轮聚合后的全局模型出现 NaN/Inf。")
-            # 如果被标记的客户端数量达到阈值，则增加计数
-            if len(flagged_clients) >= MIN_FLAGGED_CLIENTS:
-                args._anomaly_counter += 1
-            else:
-                args._anomaly_counter = max(0, args._anomaly_counter - 1)
-
-            if args._anomaly_counter >= CONSECUTIVE_ROUNDS:
-                # 连续异常，回档到上一轮
-                print(f"第 {t} 轮：连续异常达到 {args._anomaly_counter} 轮，执行回档。")
-                global_model = copy.deepcopy(prev_global_model)
-                args.local_lr = args.local_lr * 0.5
-            else:
-                # 未达到回档阈值：使用鲁棒聚合（元素中位数）作为回退
-                print(f"第 {t} 轮：未达到回档阈值，使用中位数聚合作为回退（anomaly_counter={args._anomaly_counter}）。")
-                agg_update = robust_median_aggregate(local_updates)
-                if agg_update:
-                    global_model = average(global_model, [agg_update])
-                else:
-                    # 如果聚合失败，回档
-                    global_model = copy.deepcopy(prev_global_model)
-                    args.local_lr = args.local_lr * 0.5
+        rollback = not aggregate_output_finite or not global_post_finite
+        if rollback:
+            # Reject the attempted round atomically. The checkpoint and MOS
+            # history are restored together; no bad state is promoted.
+            global_model = _clone_tensor_state(last_good_global_state)
+            historical_pop = historical_pop_before_round
+            mos_module._LAST_VALID_GUIDANCE = cached_guidance_before_round
+            args._anomaly_counter = getattr(args, '_anomaly_counter', 0) + 1
+            print(f"[FiniteAudit] round={t} rejected=True rollback=True "
+                  f"consecutive_rejected={args._anomaly_counter}")
         else:
-            # 如果模型健康，更新备份并重置计数
-            prev_global_model = copy.deepcopy(global_model)
+            last_good_global_state = _clone_tensor_state(global_model)
             args._anomaly_counter = 0
+
+        print(f"[FiniteAudit] round={t} global_pre_finite={global_pre_finite} "
+              f"benign_updates_finite={benign_updates_finite} "
+              f"malicious_updates_finite={malicious_updates_finite} "
+              f"attack_budget_output_finite={malicious_updates_finite} "
+              f"aggregate_input_finite={aggregate_input_finite} "
+              f"aggregate_output_finite={aggregate_output_finite} "
+              f"global_post_finite={global_post_finite} "
+              f"first_bad_stage={first_bad_stage or 'none'} "
+              f"rejected={rollback} rollback={rollback}")
+        if rollback and args._anomaly_counter >= getattr(
+                args, 'consecutive_anomaly_rounds', 2):
+            raise RuntimeError(
+                f"Round {t}: consecutive non-finite rounds reached "
+                f"{args._anomaly_counter}; the finite checkpoint is not "
+                "producing a usable training round"
+            )
 
         ## test global model on server side
         net_glob.load_state_dict(global_model)
