@@ -389,6 +389,31 @@ def select_final_solution(
         lambda_a = getattr(args, 'final_attack_weight', lambda_a)
         attack_floor_ratio = getattr(args, 'final_attack_floor_ratio', attack_floor_ratio)
 
+    objective_mode = getattr(args, 'mos_objective_mode', 'dual') if args is not None else 'dual'
+    if objective_mode == 'a_only':
+        feasible_indices = [i for i in range(len(total_cv)) if total_cv[i].item() <= 1e-6]
+        if feasible_indices:
+            candidates, feasibility_mode = feasible_indices, 'feasible'
+        else:
+            min_cv = total_cv.min().item()
+            candidates = [i for i in range(len(total_cv))
+                          if abs(total_cv[i].item() - min_cv) <= 1e-6]
+            feasibility_mode = 'minimum_cv_fallback'
+        best_idx = min(candidates, key=lambda i: objectives[1][i].item())
+        candidate_r, candidate_a = -objectives[0, candidates], -objectives[1, candidates]
+        candidate_cv = total_cv[candidates]
+        return best_idx, {
+            'pareto_front_size': len(candidates), 'candidates_after_floor': len(candidates),
+            'pareto_stealth_min': candidate_r.min().item(), 'pareto_stealth_max': candidate_r.max().item(),
+            'pareto_destructiveness_min': candidate_a.min().item(), 'pareto_destructiveness_max': candidate_a.max().item(),
+            'attack_floor': 0.0, 'lambda_s': lambda_s, 'lambda_a': lambda_a,
+            'selected_idx': best_idx, 'selection_mode': 'a_only',
+            'feasible_count': len(feasible_indices), 'feasible_ratio': len(feasible_indices) / len(total_cv),
+            'selection_feasibility_mode': feasibility_mode,
+            'min_cv': candidate_cv.min().item(), 'pareto_cv_min': candidate_cv.min().item(),
+            'pareto_cv_max': candidate_cv.max().item(), 'selected_cv': total_cv[best_idx].item(),
+        }
+
     # IMPORTANT: Do NOT compute global Pareto front first
     # Step 1: Check feasibility across entire population
     if total_cv is not None:

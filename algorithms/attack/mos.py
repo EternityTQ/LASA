@@ -51,9 +51,14 @@ def safe_normalize(
     return flat / max(norm, eps), norm, True
 
 
-def _selection_cv(total_cv, constraint_mode):
+def _selection_cv(total_cv, constraint_mode, objective_mode='dual'):
     """Keep Deb feasible-first only in strict mode."""
-    return total_cv if constraint_mode == 'strict' else None
+    return total_cv if constraint_mode == 'strict' or objective_mode == 'a_only' else None
+
+
+def _search_objectives(dual_objectives, objective_mode):
+    return dual_objectives if objective_mode == 'dual' else dual_objectives[1].unsqueeze(0)
+def _initial_alpha(alpha_feasible, constraint_mode, objective_mode): return 1.0 if constraint_mode == 'soft_full' and objective_mode == 'dual' else alpha_feasible
 
 
 def _estimate_feasible_alpha(benign_mean, max_dev_threshold, g_attack, constraints, context, batch_size=2):
@@ -545,11 +550,14 @@ def mos_attack(
     if constraint_mode not in ('strict', 'soft_select', 'soft_full'):
         raise ValueError(f"Unknown mos_constraint_mode: {constraint_mode}")
     print(f"[MOS-Core] constraint_mode={constraint_mode}")
+    objective_mode = getattr(args, 'mos_objective_mode', 'dual')
+    if objective_mode not in ('dual', 'a_only'): raise ValueError(f"Unknown mos_objective_mode: {objective_mode}")
+    print(f"[MOS-Core] objective_mode={objective_mode}")
     if adaptive_guided_init:
         alpha_feasible = _estimate_feasible_alpha(
             benign_mean, max_dev_threshold, g_attack, constraints, context
         )
-        alpha_init = 1.0 if constraint_mode == 'soft_full' else alpha_feasible
+        alpha_init = _initial_alpha(alpha_feasible, constraint_mode, objective_mode)
         default_scales = [fraction * alpha_init
                           for fraction in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
         print(f"[MOS-Core] adaptive_guided_init=True "
@@ -681,8 +689,8 @@ def mos_attack(
                       f"destructiveness={-init_obj[1, idx].item():.6f} "
                       f"cv={init_cv[idx].item():.6f} feasible={init_cv[idx].item() <= 1e-6}")
 
-        selected_indices = nsga2_select(init_obj, pop_size,
-                                        total_cv=_selection_cv(init_cv, constraint_mode))
+        selected_indices = nsga2_select(_search_objectives(init_obj, objective_mode), pop_size,
+                                        total_cv=_selection_cv(init_cv, constraint_mode, objective_mode))
         population = population[selected_indices]
         provenance = [provenance[i] for i in selected_indices]
         survivors = [alpha for alpha in provenance if alpha is not None]
@@ -711,7 +719,8 @@ def mos_attack(
 
         # Binary tournament parent selection
         parent_indices = binary_tournament_selection(
-            objectives, pop_size, total_cv=_selection_cv(total_cv, constraint_mode))
+            _search_objectives(objectives, objective_mode), pop_size,
+            total_cv=_selection_cv(total_cv, constraint_mode, objective_mode))
 
         # Generate offspring
         offspring = torch.empty_like(population)
@@ -754,8 +763,8 @@ def mos_attack(
         combined_cv = torch.cat([total_cv, offspring_cv], dim=0)
 
         # Environmental selection
-        selected_indices = nsga2_select(combined_obj, pop_size,
-                                        total_cv=_selection_cv(combined_cv, constraint_mode))
+        selected_indices = nsga2_select(_search_objectives(combined_obj, objective_mode), pop_size,
+                                        total_cv=_selection_cv(combined_cv, constraint_mode, objective_mode))
 
         # Update population
         population = combined_pop[selected_indices]
@@ -792,7 +801,7 @@ def mos_attack(
                 max_feasible_destruct = None
 
             # Pareto front size
-            fronts = nondominated_sort(objectives)
+            fronts = nondominated_sort(_search_objectives(objectives, objective_mode))
             pareto_front_size = len(fronts[0]) if fronts else 0
 
             # Budget usage
@@ -837,7 +846,7 @@ def mos_attack(
         population,
         final_objectives,
         benign_mean=benign_mean,
-        total_cv=_selection_cv(final_cv, constraint_mode),
+        total_cv=_selection_cv(final_cv, constraint_mode, objective_mode),
         constraint_scores=final_constraint_scores,
         scores_dict=final_scores_dict,
         args=args
@@ -900,6 +909,7 @@ def mos_attack(
     print(f"[MOS-Core] selected_R={best_stealth:.6f}")
     print(f"[MOS-Core] selected_A={best_destruct:.6f}")
     print(f"[MOS-Core] selected_cv={best_cv:.6f}")
+    print(f"[MOS-Core] selected_CV={best_cv:.6f}")
     print(f"[MOS-Core] selected_feasible={best_cv <= 1e-6}")
     print(f"[MOS-Core] selected_guidance_alignment={selected_guidance_alignment:.6f}")
 
@@ -911,7 +921,8 @@ def mos_attack(
         threshold = constraint.threshold.item()
         loss = ratio * (threshold + 1e-12)
         print(f"[MOS-Core]   {constraint.name.capitalize()}: score={score:.3f}, "
-              f"ratio={ratio:.3f}, loss={loss:.4f}, threshold={threshold:.4f}")
+              f"ratio={ratio:.3f}, violation={max(ratio - 1.0, 0.0):.3f}, "
+              f"loss={loss:.4f}, threshold={threshold:.4f}")
 
     # ========================================================================
     # Step 9: Generate K malicious updates

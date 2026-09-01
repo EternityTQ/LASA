@@ -49,6 +49,9 @@ if __name__ == '__main__':
     parser.add_argument('--mos_constraint_mode', type=str, default='strict',
                         choices=['strict', 'soft_select', 'soft_full'],
                         help='Constraint handling for MOS initialization and NSGA-II selection')
+    parser.add_argument('--mos_objective_mode', type=str, default='dual',
+                        choices=['dual', 'a_only'],
+                        help='MOS optimization objectives: R+A (dual) or destructiveness A only')
 
     # NEW: Scoring system parameters (打分系统参数)
     parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],

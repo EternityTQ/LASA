@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Server-side MOS constraint-mode comparison. The three runs differ only in
-# --mos_constraint_mode; all other command-line arguments and config files are
-# held constant.
+# Server-side MOS constraint/objective ablations. By default this runs the
+# current strict-constraint dual vs A-only comparison. Use MODE=all and
+# OBJECTIVE_MODE=dual to reproduce the original three constraint-mode runs.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GPU="${GPU:-2}"
 SEED="${SEED:-1}"
 ROUNDS="${ROUNDS:-60}"
-MODE="${MODE:-all}"
+MODE="${MODE:-strict}"
+OBJECTIVE_MODE="${OBJECTIVE_MODE:-all}"
 
 case "${MODE}" in
     strict|soft_select|soft_full) MODES=("${MODE}") ;;
     all) MODES=(strict soft_select soft_full) ;;
     *)
         echo "MODE must be strict, soft_select, soft_full, or all" >&2
+        exit 2
+        ;;
+esac
+
+case "${OBJECTIVE_MODE}" in
+    dual|a_only) OBJECTIVE_MODES=("${OBJECTIVE_MODE}") ;;
+    all) OBJECTIVE_MODES=(dual a_only) ;;
+    *)
+        echo "OBJECTIVE_MODE must be dual, a_only, or all" >&2
         exit 2
         ;;
 esac
@@ -48,13 +58,14 @@ fi
 mkdir -p "${OUTPUT_ROOT}" "${ROOT_DIR}/data"
 
 write_metrics() {
-    local mode="$1"
-    local log_file="$2"
-    local csv_file="$3"
+    local constraint_mode="$1"
+    local objective_mode="$2"
+    local log_file="$3"
+    local csv_file="$4"
 
-    awk -v mode="${mode}" '
+    awk -v constraint_mode="${constraint_mode}" -v objective_mode="${objective_mode}" '
         BEGIN {
-            print "mode,round,train_loss,test_acc,alpha_feasible,alpha_init,selected_A,selected_R,selected_CV,selected_guidance_alignment,limiting_constraint,boundary_left,boundary_right"
+            print "constraint_mode,objective_mode,round,train_loss,test_acc,alpha_feasible,alpha_init,selected_A,selected_R,selected_CV,selected_guidance_alignment,limiting_constraint,boundary_left,boundary_right,selection_mode,selected_feasible,radial_score,radial_ratio,radial_violation,sign_score,sign_ratio,sign_violation"
             reset_round_fields()
         }
 
@@ -68,12 +79,17 @@ write_metrics() {
             limiting_constraint = ""
             boundary_left = ""
             boundary_right = ""
+            selection_mode = selected_feasible = ""
+            radial_score = radial_ratio = radial_violation = ""
+            sign_score = sign_ratio = sign_violation = ""
         }
 
-        function token_value(prefix,    i) {
+        function token_value(prefix,    i, value) {
             for (i = 1; i <= NF; i++) {
                 if (index($i, prefix) == 1) {
-                    return substr($i, length(prefix) + 1)
+                    value = substr($i, length(prefix) + 1)
+                    sub(/,$/, "", value)
+                    return value
                 }
             }
             return ""
@@ -118,6 +134,16 @@ write_metrics() {
             selected_alignment = token_value("selected_guidance_alignment=")
             next
         }
+        /^\[MOS-Core\] selection_mode=/ { selection_mode = token_value("selection_mode="); next }
+        /^\[MOS-Core\] selected_feasible=/ { selected_feasible = token_value("selected_feasible="); next }
+        /^\[MOS-Core\]   Radial:/ {
+            radial_score = token_value("score="); radial_ratio = token_value("ratio=")
+            radial_violation = token_value("violation="); next
+        }
+        /^\[MOS-Core\]   Sign:/ {
+            sign_score = token_value("score="); sign_ratio = token_value("ratio=")
+            sign_violation = token_value("violation="); next
+        }
 
         /^t[[:space:]]+[0-9]+: train_loss =/ {
             round = $2
@@ -135,10 +161,13 @@ write_metrics() {
                 }
             }
 
-            print csv(mode) "," csv(round) "," csv(train_loss) "," csv(test_acc) "," \
+            print csv(constraint_mode) "," csv(objective_mode) "," csv(round) "," csv(train_loss) "," csv(test_acc) "," \
                   csv(alpha_feasible) "," csv(alpha_init) "," csv(selected_a) "," \
                   csv(selected_r) "," csv(selected_cv) "," csv(selected_alignment) "," \
-                  csv(limiting_constraint) "," csv(boundary_left) "," csv(boundary_right)
+                  csv(limiting_constraint) "," csv(boundary_left) "," csv(boundary_right) "," \
+                  csv(selection_mode) "," csv(selected_feasible) "," \
+                  csv(radial_score) "," csv(radial_ratio) "," csv(radial_violation) "," \
+                  csv(sign_score) "," csv(sign_ratio) "," csv(sign_violation)
             reset_round_fields()
         }
     ' "${log_file}" > "${csv_file}"
@@ -151,43 +180,43 @@ write_summary() {
     awk -F, '
         BEGIN {
             OFS = ","
-            print "mode,observed_rounds,last_test_acc,last10_mean_acc,mean_test_acc,min_test_acc,mean_A,last10_mean_A,mean_R,mean_CV,mean_alpha_feasible"
+            print "constraint_mode,objective_mode,observed_rounds,last_test_acc,last10_mean_acc,mean_test_acc,min_test_acc,mean_A,last10_mean_A,mean_R,mean_CV,mean_alpha_feasible"
         }
         NR == 1 { next }
         {
-            mode = $1
+            mode = $1 "," $2
             if (!(mode in seen_mode)) {
                 seen_mode[mode] = 1
                 order[++mode_count] = mode
             }
             observed[mode]++
 
-            if ($4 != "") {
+            if ($5 != "") {
                 acc_count[mode]++
-                acc[mode, acc_count[mode]] = $4 + 0
-                acc_sum[mode] += $4
-                last_acc[mode] = $4
-                if (!(mode in has_min_acc) || ($4 + 0) < min_acc[mode]) {
-                    min_acc[mode] = $4 + 0
+                acc[mode, acc_count[mode]] = $5 + 0
+                acc_sum[mode] += $5
+                last_acc[mode] = $5
+                if (!(mode in has_min_acc) || ($5 + 0) < min_acc[mode]) {
+                    min_acc[mode] = $5 + 0
                     has_min_acc[mode] = 1
                 }
             }
-            if ($7 != "") {
-                a_count[mode]++
-                attack[mode, a_count[mode]] = $7 + 0
-                a_sum[mode] += $7
-            }
             if ($8 != "") {
-                r_count[mode]++
-                r_sum[mode] += $8
+                a_count[mode]++
+                attack[mode, a_count[mode]] = $8 + 0
+                a_sum[mode] += $8
             }
             if ($9 != "") {
-                cv_count[mode]++
-                cv_sum[mode] += $9
+                r_count[mode]++
+                r_sum[mode] += $9
             }
-            if ($5 != "") {
+            if ($10 != "") {
+                cv_count[mode]++
+                cv_sum[mode] += $10
+            }
+            if ($6 != "") {
                 alpha_count[mode]++
-                alpha_sum[mode] += $5
+                alpha_sum[mode] += $6
             }
         }
 
@@ -234,7 +263,9 @@ write_summary() {
 
 run_one() {
     local constraint_mode="$1"
-    local run_dir="${OUTPUT_ROOT}/${constraint_mode}"
+    local objective_mode="$2"
+    local run_name="${constraint_mode}__${objective_mode}"
+    local run_dir="${OUTPUT_ROOT}/${run_name}"
     local log_file="${run_dir}/train.log"
     local metrics_file="${run_dir}/metrics.csv"
     local summary_file="${run_dir}/summary.csv"
@@ -256,6 +287,7 @@ run_one() {
         --repeat 1
         --mos_adaptive_guided_init 1
         --mos_constraint_mode "${constraint_mode}"
+        --mos_objective_mode "${objective_mode}"
         --mos_inject_attack_ray_diagnostics 0
     )
 
@@ -266,8 +298,17 @@ run_one() {
         printf '\n'
     } > "${run_dir}/command.txt"
 
-    printf 'Running mode=%s GPU=%s SEED=%s ROUNDS=%s\n' \
-        "${constraint_mode}" "${GPU}" "${SEED}" "${ROUNDS}" | tee "${log_file}"
+    {
+        printf 'GPU=%s\nSEED=%s\nROUNDS=%s\nCONSTRAINT_MODE=%s\nOBJECTIVE_MODE=%s\n' \
+            "${GPU}" "${SEED}" "${ROUNDS}" "${constraint_mode}" "${objective_mode}"
+        printf 'GIT_COMMIT=%s\n' "$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null || printf unavailable)"
+        printf 'GIT_STATUS_BEGIN\n'
+        git -C "${ROOT_DIR}" status --short 2>/dev/null || true
+        printf 'GIT_STATUS_END\n'
+    } > "${run_dir}/environment.txt"
+
+    printf 'Running constraint_mode=%s objective_mode=%s GPU=%s SEED=%s ROUNDS=%s\n' \
+        "${constraint_mode}" "${objective_mode}" "${GPU}" "${SEED}" "${ROUNDS}" | tee "${log_file}"
 
     local train_status
     set +e
@@ -278,7 +319,7 @@ run_one() {
     train_status=${PIPESTATUS[0]}
     set -e
 
-    write_metrics "${constraint_mode}" "${log_file}" "${metrics_file}"
+    write_metrics "${constraint_mode}" "${objective_mode}" "${log_file}" "${metrics_file}"
     write_summary "${metrics_file}" "${summary_file}"
 
     if (( train_status != 0 )); then
@@ -288,19 +329,23 @@ run_one() {
 }
 
 for constraint_mode in "${MODES[@]}"; do
-    run_one "${constraint_mode}"
+    for objective_mode in "${OBJECTIVE_MODES[@]}"; do
+        run_one "${constraint_mode}" "${objective_mode}"
+    done
 done
 
 COMBINED_METRICS="${OUTPUT_ROOT}/metrics.csv"
 first_metrics=1
 for constraint_mode in "${MODES[@]}"; do
-    mode_metrics="${OUTPUT_ROOT}/${constraint_mode}/metrics.csv"
-    if (( first_metrics )); then
-        cp "${mode_metrics}" "${COMBINED_METRICS}"
-        first_metrics=0
-    else
-        tail -n +2 "${mode_metrics}" >> "${COMBINED_METRICS}"
-    fi
+    for objective_mode in "${OBJECTIVE_MODES[@]}"; do
+        mode_metrics="${OUTPUT_ROOT}/${constraint_mode}__${objective_mode}/metrics.csv"
+        if (( first_metrics )); then
+            cp "${mode_metrics}" "${COMBINED_METRICS}"
+            first_metrics=0
+        else
+            tail -n +2 "${mode_metrics}" >> "${COMBINED_METRICS}"
+        fi
+    done
 done
 write_summary "${COMBINED_METRICS}" "${OUTPUT_ROOT}/summary.csv"
 

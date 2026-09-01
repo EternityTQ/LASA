@@ -1403,6 +1403,40 @@ def test_constraint_mode_cv_routing():
     assert_true(mos._selection_cv(cv, 'soft_full') is None)
 
 
+def test_a_only_objective_and_hard_constraint_routing():
+    """A-only exposes only A to NSGA-II and always retains CV handling."""
+    objectives = Tensor([-9.0, -1.0, -2.0, -8.0], shape=(2, 2))
+    active = mos._search_objectives(objectives, 'a_only')
+    cv = Tensor([0.0, 0.2])
+    assert_true(active._v == [-2.0, -8.0])
+    assert_true(mos._selection_cv(cv, 'soft_full', 'a_only') is cv)
+
+
+def test_a_only_final_selection_ignores_r_and_prefers_feasible():
+    """A wins CV ties, R cannot win, and feasibility remains primary."""
+    class Args: mos_objective_mode = 'a_only'
+    population = Tensor([0.0, 1.0, 2.0], shape=(3, 1))
+    # Candidate 0 has much higher R but lower A; candidate 2 has best A but is infeasible.
+    objectives = Tensor([-100.0, -1.0, -50.0, -2.0, -8.0, -20.0], shape=(2, 3))
+    best_idx, diagnostics = mos.select_final_solution(
+        population, objectives, total_cv=Tensor([0.0, 0.0, 0.1]), args=Args())
+    assert_true(best_idx == 1)
+    assert_true(diagnostics['selection_mode'] == 'a_only')
+    assert_true(diagnostics['selected_cv'] == 0.0)
+
+
+def test_a_only_min_cv_then_a_and_adaptive_alpha():
+    """Without feasible points, minimum CV wins first and A breaks its tie."""
+    class Args: mos_objective_mode = 'a_only'
+    population = Tensor([0.0, 1.0, 2.0], shape=(3, 1))
+    objectives = Tensor([-9.0, -1.0, -5.0, -2.0, -7.0, -20.0], shape=(2, 3))
+    best_idx, _ = mos.select_final_solution(
+        population, objectives, total_cv=Tensor([0.2, 0.2, 0.5]), args=Args())
+    assert_true(best_idx == 1)
+    assert_close(mos._initial_alpha(0.375, 'soft_full', 'a_only'), 0.375)
+    assert_close(mos._initial_alpha(0.375, 'soft_full', 'dual'), 1.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1442,6 +1476,9 @@ if __name__ == '__main__':
         ("Adaptive alpha resolves sub-milliscale boundary", test_adaptive_alpha_estimation_resolves_sub_milliscale_boundary),
         ("Boundary diagnostics are plugin-generic", test_boundary_diagnostics_are_plugin_generic),
         ("Constraint modes route CV correctly", test_constraint_mode_cv_routing),
+        ("A-only objective and hard-CV routing", test_a_only_objective_and_hard_constraint_routing),
+        ("A-only final selection ignores R", test_a_only_final_selection_ignores_r_and_prefers_feasible),
+        ("A-only minimum-CV fallback and adaptive alpha", test_a_only_min_cv_then_a_and_adaptive_alpha),
     ]
 
     failed = 0

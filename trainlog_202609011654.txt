@@ -1,0 +1,482 @@
+t   7: train_loss = 67534.492, test_acc = 9.910
+attack numbers = 8
+[FiniteAudit] round=8 checkpoint_promoted_after_benign=True
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: 992938523885568.0000
+[MOS-Core] Benign std (mean): 491689280.0000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=1350469117018112.0
+[MOS-Core] guidance_history_cosine=0.9711877703666687
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 925027708960768.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=925027708960768.000000
+[MOS-Core] current_budget_valid=True
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 925027708960768.0000
+[MOS-Core]   Sign threshold: 2.5496
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial=0=1=0|sign=0=1=0 right=radial=7.6294e-06=0.999992=0|sign=6.43243e+07=1.55462e-08=6.43243e+07
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=1350469117018112.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=462513854480384.000000
+[MOS-Core] historical_seed_final_norm=462513820925952.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=198972211724288.0000, max=834422152626176.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2151, max=0.9021
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+Stealth: mean=0.641, best=1.000
+Destructiveness: mean=276843022254080.000, best=833883603992576.000
+CV: mean=1289216458752.0000, min=0.0000
+Feasibility: count=3, ratio=30.00%
+Max feasible destruct: 0.000
+Pareto front size: 10
+Budget ratio: mean=0.310, max=0.905
+Radial: mean_ratio=0.310, max_ratio=0.905, mean_score=0.812
+Sign: mean_ratio=2578432917504.000, max_ratio=7622962970624.000, mean_score=0.300
+[MOS-Core] Gen 10/100:
+Stealth: mean=0.593, best=1.000
+Destructiveness: mean=299592692269056.000, best=855695394078720.000
+CV: mean=1392819699712.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.244
+Pareto front size: 10
+Budget ratio: mean=0.340, max=0.943
+Radial: mean_ratio=0.340, max_ratio=0.943, mean_score=0.789
+Sign: mean_ratio=2785639399424.000, max_ratio=7762693062656.000, mean_score=0.199
+[MOS-Core] Gen 20/100:
+Stealth: mean=0.589, best=1.000
+Destructiveness: mean=302997460484096.000, best=883209826992128.000
+CV: mean=1403527888896.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.305
+Pareto front size: 10
+Budget ratio: mean=0.349, max=0.981
+Radial: mean_ratio=0.349, max_ratio=0.981, mean_score=0.784
+Sign: mean_ratio=2807055777792.000, max_ratio=7896626102272.000, mean_score=0.199
+[MOS-Core] Gen 30/100:
+Stealth: mean=0.586, best=1.000
+Destructiveness: mean=304744270659584.000, best=896764139798528.000
+CV: mean=1406400331776.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.416
+Pareto front size: 10
+Budget ratio: mean=0.357, max=1.000
+Radial: mean_ratio=0.357, max_ratio=1.000, mean_score=0.779
+Sign: mean_ratio=2812800663552.000, max_ratio=7875383525376.000, mean_score=0.198
+[MOS-Core] Gen 40/100:
+Stealth: mean=0.585, best=1.000
+Destructiveness: mean=305972396425216.000, best=896764139798528.000
+CV: mean=1424355491840.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.460
+Pareto front size: 10
+Budget ratio: mean=0.359, max=1.000
+Radial: mean_ratio=0.359, max_ratio=1.000, mean_score=0.778
+Sign: mean_ratio=2848710983680.000, max_ratio=7875383525376.000, mean_score=0.198
+[MOS-Core] Gen 50/100:
+Stealth: mean=0.581, best=1.000
+Destructiveness: mean=307304977137664.000, best=897189811322880.000
+CV: mean=1426424332288.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.792
+Pareto front size: 10
+Budget ratio: mean=0.368, max=1.000
+Radial: mean_ratio=0.368, max_ratio=1.000, mean_score=0.773
+Sign: mean_ratio=2852848664576.000, max_ratio=7813299961856.000, mean_score=0.196
+[MOS-Core] Gen 60/100:
+Stealth: mean=0.577, best=1.000
+Destructiveness: mean=308949714731008.000, best=897664606535680.000
+CV: mean=1431849664512.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.926
+Pareto front size: 10
+Budget ratio: mean=0.376, max=1.000
+Radial: mean_ratio=0.376, max_ratio=1.000, mean_score=0.768
+Sign: mean_ratio=2863699329024.000, max_ratio=7832585895936.000, mean_score=0.196
+[MOS-Core] Gen 70/100:
+Stealth: mean=0.584, best=1.000
+Destructiveness: mean=307057211211776.000, best=898813644505088.000
+CV: mean=1406697996288.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.962
+Pareto front size: 10
+Budget ratio: mean=0.364, max=1.000
+Radial: mean_ratio=0.364, max_ratio=1.000, mean_score=0.778
+Sign: mean_ratio=2813395992576.000, max_ratio=7799704125440.000, mean_score=0.195
+[MOS-Core] Gen 80/100:
+Stealth: mean=0.578, best=1.000
+Destructiveness: mean=307882146922496.000, best=898880619151360.000
+CV: mean=1424370958336.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.987
+Pareto front size: 10
+Budget ratio: mean=0.374, max=1.000
+Radial: mean_ratio=0.374, max_ratio=1.000, mean_score=0.770
+Sign: mean_ratio=2848741916672.000, max_ratio=7796417888256.000, mean_score=0.195
+[MOS-Core] Gen 90/100:
+Stealth: mean=0.569, best=1.000
+Destructiveness: mean=325054197923840.000, best=899363668754432.000
+CV: mean=1495429677056.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 1.022
+Pareto front size: 10
+Budget ratio: mean=0.403, max=1.000
+Radial: mean_ratio=0.403, max_ratio=1.000, mean_score=0.757
+Sign: mean_ratio=2990859354112.000, max_ratio=7803989655552.000, mean_score=0.194
+[MOS-Core] Gen 100/100:
+Stealth: mean=0.567, best=1.000
+Destructiveness: mean=324965614223360.000, best=899693173276672.000
+CV: mean=1496087920640.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 1.307
+Pareto front size: 10
+Budget ratio: mean=0.407, max=1.000
+Radial: mean_ratio=0.407, max_ratio=1.000, mean_score=0.753
+Sign: mean_ratio=2992175841280.000, max_ratio=7768515280896.000, mean_score=0.194
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+Lambda_s (stealth weight): 0.50
+Lambda_a (attack weight): 0.50
+Attack floor ratio: 89969317327667.2031
+[MOS-Core] Pareto front summary:
+Front size: 10
+Stealth range: [0.333, 1.000]
+Destructiveness range: [0.000, 899693173276672.000]
+Candidates after attack floor: 6
+[MOS-Core] Selected solution (index=6):
+[MOS-Core]   Constraint pass score (R): 0.356
+[MOS-Core]   Destructiveness (A): 793492657799168.000
+[MOS-Core]   Total CV: 3884257640448.0000
+[MOS-Core]   Deviation norm: 808928434716672.0000
+[MOS-Core]   Budget usage: 87.45%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.874491
+[MOS-Core] selected_stealth=0.355652
+[MOS-Core] selected_destructiveness=793492657799168.000000
+[MOS-Core] selected_R=0.355652
+[MOS-Core] selected_A=793492657799168.000000
+[MOS-Core] selected_cv=3884257640448.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.980923
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.533, ratio=0.874, loss=808928439480700.0000, threshold=925027708960768.0000
+[MOS-Core]   Sign: score=0.000, ratio=7768515280896.000, loss=19806724212243.6445, threshold=2.5496
+attack
+defend
+[FiniteAudit] round=8 defense=multi_krum selected_count=3 selected_malicious_count=1 selected_updates_finite=True selected_indices=[15, 16, 4]
+[FiniteAudit] round=8 global_pre_finite=True benign_updates_finite=True malicious_updates_finite=True attack_budget_output_finite=True aggregate_input_finite=True aggregate_output_finite=True global_post_finite=True first_bad_stage=none rejected=False rollback=False
+t   8: train_loss = 31780.356, test_acc = 10.000
+attack numbers = 8
+[FiniteAudit] round=9 client_type=benign nonfinite_count=17
+current iteration attack ratio: 0.32
+[FiniteAudit] round=9 mos_skipped_due_to_nonfinite_benign=True
+[FiniteAudit] round=9 client_type=malicious nonfinite_count=8
+[FiniteAudit] round=9 global_pre_finite=True benign_updates_finite=False malicious_updates_finite=False attack_budget_output_finite=False aggregate_input_finite=False aggregate_output_finite=NA global_post_finite=NA first_bad_stage=benign_client_updates rejected=True rollback=True consecutive_rejected=1
+t   9: train_loss = nan, test_acc = 9.910
+attack numbers = 8
+[FiniteAudit] round=10 checkpoint_promoted_after_benign=True
+current iteration attack ratio: 0.32
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 17
+[MOS-Core] Malicious slots: 8
+[MOS-Core] Benign mean norm: 582813438967808.0000
+[MOS-Core] Benign std (mean): 676116224.0000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=808928434716672.0
+[MOS-Core] guidance_history_cosine=0.9809229373931885
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 1380236193169408.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=1380236193169408.000000
+[MOS-Core] current_budget_valid=True
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 1380236193169408.0000
+[MOS-Core]   Sign threshold: 2.1273
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial=0=1=0|sign=0=1=0 right=radial=7.62939e-06=0.999992=0|sign=9.43963e+07=1.05936e-08=9.43963e+07
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=808928434716672.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=690118096584704.000000
+[MOS-Core] historical_seed_final_norm=690118163693568.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=310085632917504.0000, max=1183287246585856.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.2247, max=0.8573
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+Stealth: mean=0.643, best=1.000
+Destructiveness: mean=390822394593280.000, best=1179845904039936.000
+CV: mean=1768256569344.0000, min=0.0000
+Feasibility: count=3, ratio=30.00%
+Max feasible destruct: 0.092
+Pareto front size: 10
+Budget ratio: mean=0.294, max=0.859
+Radial: mean_ratio=0.294, max_ratio=0.859, mean_score=0.815
+Sign: mean_ratio=3536513138688.000, max_ratio=10614203219968.000, mean_score=0.299
+[MOS-Core] Gen 10/100:
+Stealth: mean=0.577, best=1.000
+Destructiveness: mean=489981680287744.000, best=1215741093216256.000
+CV: mean=2192820928512.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.198
+Pareto front size: 10
+Budget ratio: mean=0.369, max=0.892
+Radial: mean_ratio=0.369, max_ratio=0.892, mean_score=0.767
+Sign: mean_ratio=4385641857024.000, max_ratio=10537072066560.000, mean_score=0.199
+[MOS-Core] Gen 20/100:
+Stealth: mean=0.582, best=1.000
+Destructiveness: mean=468367760687104.000, best=1243720791883776.000
+CV: mean=2097730420736.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.218
+Pareto front size: 10
+Budget ratio: mean=0.359, max=0.918
+Radial: mean_ratio=0.359, max_ratio=0.918, mean_score=0.774
+Sign: mean_ratio=4195460841472.000, max_ratio=10741226668032.000, mean_score=0.199
+[MOS-Core] Gen 30/100:
+Stealth: mean=0.593, best=1.000
+Destructiveness: mean=427261534666752.000, best=1260189575544832.000
+CV: mean=1922070478848.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.481
+Pareto front size: 10
+Budget ratio: mean=0.336, max=0.935
+Radial: mean_ratio=0.336, max_ratio=0.935, mean_score=0.791
+Sign: mean_ratio=3844140957696.000, max_ratio=10777522077696.000, mean_score=0.198
+[MOS-Core] Gen 40/100:
+Stealth: mean=0.592, best=1.000
+Destructiveness: mean=430695193247744.000, best=1300578105819136.000
+CV: mean=1925530779648.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.481
+Pareto front size: 10
+Budget ratio: mean=0.341, max=0.972
+Radial: mean_ratio=0.341, max_ratio=0.972, mean_score=0.789
+Sign: mean_ratio=3851061559296.000, max_ratio=10814243209216.000, mean_score=0.198
+[MOS-Core] Gen 50/100:
+Stealth: mean=0.590, best=1.000
+Destructiveness: mean=433033198960640.000, best=1327790884388864.000
+CV: mean=1939842138112.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.481
+Pareto front size: 10
+Budget ratio: mean=0.346, max=1.000
+Radial: mean_ratio=0.346, max_ratio=1.000, mean_score=0.786
+Sign: mean_ratio=3879684276224.000, max_ratio=10999766712320.000, mean_score=0.198
+[MOS-Core] Gen 60/100:
+Stealth: mean=0.588, best=1.000
+Destructiveness: mean=431863894114304.000, best=1327840947601408.000
+CV: mean=1953731313664.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.489
+Pareto front size: 10
+Budget ratio: mean=0.349, max=0.999
+Radial: mean_ratio=0.349, max_ratio=0.999, mean_score=0.784
+Sign: mean_ratio=3907462627328.000, max_ratio=11103113314304.000, mean_score=0.198
+[MOS-Core] Gen 70/100:
+Stealth: mean=0.588, best=1.000
+Destructiveness: mean=431594653351936.000, best=1328914286772224.000
+CV: mean=1953822539776.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.580
+Pareto front size: 10
+Budget ratio: mean=0.351, max=1.000
+Radial: mean_ratio=0.351, max_ratio=1.000, mean_score=0.783
+Sign: mean_ratio=3907645079552.000, max_ratio=11038778982400.000, mean_score=0.197
+[MOS-Core] Gen 80/100:
+Stealth: mean=0.587, best=1.000
+Destructiveness: mean=432530117361664.000, best=1329075213828096.000
+CV: mean=1960108752896.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.788
+Pareto front size: 10
+Budget ratio: mean=0.353, max=1.000
+Radial: mean_ratio=0.353, max_ratio=1.000, mean_score=0.782
+Sign: mean_ratio=3920217505792.000, max_ratio=11071752503296.000, mean_score=0.197
+[MOS-Core] Gen 90/100:
+Stealth: mean=0.585, best=1.000
+Destructiveness: mean=430794279485440.000, best=1329075213828096.000
+CV: mean=1960336293888.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 1.219
+Pareto front size: 10
+Budget ratio: mean=0.355, max=1.000
+Radial: mean_ratio=0.355, max_ratio=1.000, mean_score=0.780
+Sign: mean_ratio=3920672587776.000, max_ratio=11071752503296.000, mean_score=0.196
+[MOS-Core] Gen 100/100:
+Stealth: mean=0.582, best=1.000
+Destructiveness: mean=430515341492224.000, best=1330249350512640.000
+CV: mean=1959854211072.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 1.663
+Pareto front size: 10
+Budget ratio: mean=0.360, max=1.000
+Radial: mean_ratio=0.360, max_ratio=1.000, mean_score=0.776
+Sign: mean_ratio=3919708422144.000, max_ratio=11084646842368.000, mean_score=0.194
+[MOS-Core] Selecting final solution...
+[MOS-Core] Selection parameters:
+Lambda_s (stealth weight): 0.50
+Lambda_a (attack weight): 0.50
+Attack floor ratio: 133024935051264.0000
+[MOS-Core] Pareto front summary:
+Front size: 10
+Stealth range: [0.333, 1.000]
+Destructiveness range: [0.000, 1330249350512640.000]
+Candidates after attack floor: 6
+[MOS-Core] Selected solution (index=7):
+[MOS-Core]   Constraint pass score (R): 0.366
+[MOS-Core]   Destructiveness (A): 1102621318316032.000
+[MOS-Core]   Total CV: 5483646156800.0000
+[MOS-Core]   Deviation norm: 1134105039208448.0000
+[MOS-Core]   Budget usage: 82.17%
+[MOS-Core] selection_mode=balanced_knee
+[MOS-Core] selected_budget_ratio=0.821675
+[MOS-Core] selected_stealth=0.365964
+[MOS-Core] selected_destructiveness=1102621318316032.000000
+[MOS-Core] selected_R=0.365964
+[MOS-Core] selected_A=1102621318316032.000000
+[MOS-Core] selected_cv=5483646156800.000000
+[MOS-Core] selected_feasible=False
+[MOS-Core] selected_guidance_alignment=0.972245
+[MOS-Core] Per-constraint details:
+[MOS-Core]   Radial: score=0.549, ratio=0.822, loss=1134105001697056.0000, threshold=1380236193169408.0000
+[MOS-Core]   Sign: score=0.000, ratio=10967292313600.000, loss=23330749965173.4688, threshold=2.1273
+attack
+defend
+[FiniteAudit] round=10 defense=multi_krum selected_count=3 selected_malicious_count=1 selected_updates_finite=True selected_indices=[17, 18, 1]
+[FiniteAudit] round=10 global_pre_finite=True benign_updates_finite=True malicious_updates_finite=True attack_budget_output_finite=True aggregate_input_finite=True aggregate_output_finite=True global_post_finite=True first_bad_stage=none rejected=False rollback=False
+t  10: train_loss = 34247.407, test_acc = 10.000
+attack numbers = 6
+[FiniteAudit] round=11 client_type=benign nonfinite_count=19
+current iteration attack ratio: 0.24
+[FiniteAudit] round=11 mos_skipped_due_to_nonfinite_benign=True
+[FiniteAudit] round=11 client_type=malicious nonfinite_count=6
+[FiniteAudit] round=11 global_pre_finite=True benign_updates_finite=False malicious_updates_finite=False attack_budget_output_finite=False aggregate_input_finite=False aggregate_output_finite=NA global_post_finite=NA first_bad_stage=benign_client_updates rejected=True rollback=True consecutive_rejected=1
+t  11: train_loss = nan, test_acc = 9.910
+attack numbers = 3
+[FiniteAudit] round=12 checkpoint_promoted_after_benign=True
+current iteration attack ratio: 0.12
+[MOS WARNING] CE logits contain NaN/Inf, using safe fallback
+[MOS-Core] Total parameters: 11,183,582
+[MOS-Core] Benign clients: 22
+[MOS-Core] Malicious slots: 3
+[MOS-Core] Benign mean norm: 609096357117952.0000
+[MOS-Core] Benign std (mean): 780612160.0000
+[MOS-Core] ce_raw_norm=0.0
+[MOS-Core] cw_raw_norm=0.0
+[MOS-Core] ce_valid=False
+[MOS-Core] cw_valid=False
+[MOS-Core] ce_cw_cosine=nan
+[MOS-Core] combined_pre_norm=0.0
+[MOS-Core] historical_direction_valid=True
+[MOS-Core] historical_direction_norm=1134105173426176.0
+[MOS-Core] guidance_history_cosine=0.9722445011138916
+[MOS-Core] guidance_source=cached_last_valid
+[MOS-Core] guidance_fallback_used=True
+[MOS-Core] final_guidance_norm=1.000000
+[MOS-Core] Base radial threshold (q=0.95): 1708674087124992.0000
+[MOS-Core] Attack budget ratio: 1.0
+[MOS-Core] current_budget=1708674087124992.000000
+[MOS-Core] current_budget_valid=True
+[MOS-Core] Initializing constraints...
+[MOS-Core] Enabled constraints: Radial, Sign
+[MOS-Core] Radial weight: 1.0
+[MOS-Core] Sign weight: 0.5, layer_reduce: quantile
+[MOS-Core]   Radial threshold: 1708674087124992.0000
+[MOS-Core]   Sign threshold: 1.9966
+[MOS-Core] Initializing population (size=10)...
+[MOS-Core] constraint_mode=soft_select
+[MOS-Core] alpha_feasible=0.000000 boundary_width=7.62939e-06 refinements=13 zero_reason=确认无非零可行点
+[MOS-Boundary] alpha_feasible=0.000000 alpha_infeasible=0.000008 limiting_constraint=sign left=radial=0=1=0|sign=0=1=0 right=radial=7.62939e-06=0.999992=0|sign=1.90078e+08=5.26099e-09=1.90078e+08
+[MOS-Core] adaptive_guided_init=True alpha_feasible=0.000000 alpha_init=0.000000 scales=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Generated 6 scale-based seeds: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[MOS-Core] Historical seed injected at position 3
+[MOS-Core] historical_raw_norm=1134105173426176.000000
+[MOS-Core] historical_direction_norm=1.000000
+[MOS-Core] historical_seed_target_scale=854337043562496.000000
+[MOS-Core] historical_seed_final_norm=854336976453632.000000
+[MOS-Core] Generated 4 random candidates (noise_scale=0.1)
+[MOS-Core] Initial population norms: min=0.0000, mean=531411639468032.0000, max=1404835349921792.0000
+[MOS-Core] Budget ratios: min=0.0000, mean=0.3110, max=0.8222
+[MOS-Core] Clipped ratio: 0.00%
+[MOS-Core] Historical seed used: True
+[MOS-Core] Starting NSGA-II evolution...
+[MOS-Core] Generations: 100
+[MOS-Core] Population size: 10
+[MOS-Core] SBX eta: 15.0, crossover_prob: 0.9
+[MOS-Core] Mutation scale: 0.05
+[MOS-Core] Gen 1/100:
+Stealth: mean=0.653, best=1.000
+Destructiveness: mean=590471499874304.000, best=1402632165916672.000
+CV: mean=4366689107968.0000, min=0.0000
+Feasibility: count=4, ratio=40.00%
+Max feasible destruct: 0.216
+Pareto front size: 10
+Budget ratio: mean=0.354, max=0.823
+Radial: mean_ratio=0.354, max_ratio=0.823, mean_score=0.780
+Sign: mean_ratio=8733378215936.000, max_ratio=20516849057792.000, mean_score=0.399
+[MOS-Core] Gen 10/100:
+Stealth: mean=0.578, best=1.000
+Destructiveness: mean=593656754995200.000, best=1421279437520896.000
+CV: mean=4468684881920.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
+Max feasible destruct: 0.666
+Pareto front size: 10
+Budget ratio: mean=0.368, max=0.841
+Radial: mean_ratio=0.368, max_ratio=0.841, mean_score=0.768
+Sign: mean_ratio=8937369763840.000, max_ratio=20664593416192.000, mean_score=0.197
+[MOS-Core] Gen 20/100:
+Stealth: mean=0.575, best=1.000
+Destructiveness: mean=596992333971456.000, best=1428693356380160.000
+CV: mean=4478871797760.0000, min=0.0000
+Feasibility: count=2, ratio=20.00%
