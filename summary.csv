@@ -1,0 +1,2 @@
+mode,observed_rounds,last_test_acc,last10_mean_acc,mean_test_acc,min_test_acc,mean_A,last10_mean_A,mean_R,mean_CV,mean_alpha_feasible
+strict,60,61.510,54.513000,25.787500,10.000000,1.065154,0.552650,0.859910,0.000000,0.005180

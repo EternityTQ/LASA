@@ -194,6 +194,10 @@ def fedavg_all(args):
             net_glob.load_state_dict(global_model)
             print(f"[FiniteAudit] round={t} restored_before_local_training=True")
 
+        # Keep the exact model from which this round's clients train. It is
+        # promoted to last-good only after benign local training proves that
+        # this finite state is numerically usable.
+        round_start_global_state = _clone_tensor_state(global_model)
         historical_pop_before_round = _clone_optional_tensor(historical_pop)
         cached_guidance_before_round = _clone_optional_tensor(
             getattr(mos_module, '_LAST_VALID_GUIDANCE', None)
@@ -294,6 +298,9 @@ def fedavg_all(args):
         if benign_bad_indices:
             print(f"[FiniteAudit] round={t} client_type=benign "
                   f"nonfinite_count={len(benign_bad_indices)}")
+        else:
+            last_good_global_state = round_start_global_state
+            print(f"[FiniteAudit] round={t} checkpoint_promoted_after_benign=True")
         # gt attack ratio
         if args.num_attackers > 0:
             gt_attack_ratio = gt_attack_cnt / args.num_selected_users
@@ -306,7 +313,9 @@ def fedavg_all(args):
 
         ################## <<< Attack Point 2: local model poisoning attacks
         ################## <<< Attack Point 2: local model poisoning attacks
-        if malicious_attackers_this_round != 0:
+        if not benign_updates_finite and malicious_attackers_this_round != 0:
+            print(f"[FiniteAudit] round={t} mos_skipped_due_to_nonfinite_benign=True")
+        if benign_updates_finite and malicious_attackers_this_round != 0:
             if args.attack == 'mos_attack' or 'mos' in args.attack: # 请根据你实际传的 args.attack 名字修改
                 # 随便找一个参与了本轮攻击的恶意客户端，拿他的数据生成指导梯度
                 malicious_client_idx = [idx for idx in selected_idxs if idx in attacked_idxs][0]
@@ -586,7 +595,8 @@ def fedavg_all(args):
             print(f"[FiniteAudit] round={t} rejected=True rollback=True "
                   f"consecutive_rejected={args._anomaly_counter}")
         else:
-            last_good_global_state = _clone_tensor_state(global_model)
+            # The post-aggregation state remains provisional until it safely
+            # supports benign local training at the start of the next round.
             args._anomaly_counter = 0
 
         print(f"[FiniteAudit] round={t} global_pre_finite={global_pre_finite} "
