@@ -697,6 +697,9 @@ def mos_attack(
         statuses = {alpha: alpha in survivors for alpha in ray_alphas}
         print(f"[MOS-RayDiag] stage=post_first_environmental_selection survival={statuses}")
 
+    if getattr(args, '_mos_diagnostics_active', False):
+        initial_population = population.detach().clone()
+
     # ========================================================================
     # Step 7: NSGA-II Evolution
     # ========================================================================
@@ -895,6 +898,22 @@ def mos_attack(
     selected_guidance_alignment = torch.dot(
         best_template - benign_mean, g_attack
     ).item() / max(best_norm, 1e-12)
+
+    # A diagnostic snapshot is opt-in and consists only of detached copies.
+    # The training engine consumes it without changing MOS's return contract.
+    if getattr(args, '_mos_diagnostics_active', False):
+        args._mos_diagnostic_snapshot = {
+            'population': population.detach().clone(),
+            'initial_population': initial_population.detach().clone(),
+            'benign_grads': benign_grads.detach().clone(),
+            'benign_mean': benign_mean.detach().clone(),
+            'benign_std': benign_std.detach().clone(),
+            'g_attack': g_attack.detach().clone(),
+            'max_dev_threshold': max_dev_threshold.detach().clone(),
+            'layer_dims': list(layer_dims),
+            'best_idx': int(best_idx),
+            'selection_mode': selection_diagnostics.get('selection_mode', objective_mode),
+        }
 
     print(f"\n[MOS-Core] Selected solution (index={best_idx}):")
     print(f"[MOS-Core]   Constraint pass score (R): {best_stealth:.3f}")

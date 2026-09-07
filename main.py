@@ -52,6 +52,16 @@ if __name__ == '__main__':
     parser.add_argument('--mos_objective_mode', type=str, default='dual',
                         choices=['dual', 'a_only'],
                         help='MOS optimization objectives: R+A (dual) or destructiveness A only')
+    parser.add_argument('--mos_diagnostics', type=int, default=0,
+                        help='Enable read-only MOS first-batch diagnostics')
+    parser.add_argument('--mos_diag_rounds', type=str, default='0,20,40,59',
+                        help='Comma-separated zero-based rounds for MOS diagnostics')
+    parser.add_argument('--mos_diag_candidates', type=int, default=16,
+                        help='Maximum candidates evaluated per diagnostic round')
+    parser.add_argument('--mos_diag_samples', type=int, default=256,
+                        help='Deterministic validation samples used by effect diagnostics')
+    parser.add_argument('--mos_diagnostics_dir', type=str, default='.',
+                        help='Directory for MOS diagnostic CSV files')
 
     # NEW: Scoring system parameters (打分系统参数)
     parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],

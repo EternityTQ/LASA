@@ -32,6 +32,7 @@ import time
 
 from ..attack import attack
 from ..attack.mos import compute_surrogate_guidance as compute_surrogate_guidance_mos
+from .mos_diagnostics import clone_updates, diagnostic_rounds, run_first_batch_diagnostics
 
 
 def _clone_tensor_state(state):
@@ -181,6 +182,7 @@ def fedavg_all(args):
     mos_module = importlib.import_module('..attack.mos', package=__package__)
 
     historical_pop = None
+    mos_diag_round_set = diagnostic_rounds(args)
     
     for t in range(args.round):
         global_pre_finite = _tensor_state_is_finite(global_model)
@@ -318,6 +320,9 @@ def fedavg_all(args):
         if benign_updates_finite and malicious_attackers_this_round != 0:
             if args.attack == 'mos_attack' or 'mos' in args.attack: # 请根据你实际传的 args.attack 名字修改
                 # 随便找一个参与了本轮攻击的恶意客户端，拿他的数据生成指导梯度
+                diagnostics_active = t in mos_diag_round_set
+                args._mos_diagnostics_active = diagnostics_active
+                diagnostic_updates = clone_updates(local_updates) if diagnostics_active else None
                 malicious_client_idx = [idx for idx in selected_idxs if idx in attacked_idxs][0]
                 ldr_malicious = data_loader_list[malicious_client_idx]
                 
@@ -336,6 +341,19 @@ def fedavg_all(args):
                     g_cw=g_cw, 
                     historical_pop=historical_pop
                 )
+                diagnostic_snapshot = getattr(args, '_mos_diagnostic_snapshot', None)
+                if diagnostics_active and diagnostic_snapshot is not None:
+                    # MMEngine Config permits dynamic assignment/read here but
+                    # its __delattr__ rejects this private runtime field.
+                    # Clearing the value releases the large tensor snapshot
+                    # without relying on attribute deletion semantics.
+                    args._mos_diagnostic_snapshot = None
+                    run_first_batch_diagnostics(
+                        t, diagnostic_snapshot, diagnostic_updates,
+                        malicious_attackers_this_round, historical_pop_before_round,
+                        g_ce, g_cw, round_start_global_state, net_glob,
+                        dataset_val, dataset_test, args, mos_module)
+                args._mos_diagnostics_active = False
                 # ===================================================================
             else:
                 local_updates = attack_method(local_updates, args, malicious_attackers_this_round)
