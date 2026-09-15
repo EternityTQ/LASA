@@ -1,0 +1,2 @@
+cd /home3/zbh25lsb/data/LASA-master/server_experiments/mos_first_batch_diagnostics/20260907_124200
+PYTHONPATH=/home3/zbh25lsb/data/LASA-master python /home3/zbh25lsb/data/LASA-master/main.py --dataset cifar --num_attackers 20 --attack mos_attack --defend1 multi_krum --seed 1 --gpu 1 --repeat 1 --mos_constraint_mode strict --mos_objective_mode dual --mos_adaptive_guided_init 1 --mos_inject_attack_ray_diagnostics 0 --mos_diagnostics 1 --mos_diag_rounds 0\,20\,40\,59 --mos_diag_candidates 16 --mos_diagnostics_dir . 

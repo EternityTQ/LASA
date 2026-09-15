@@ -52,6 +52,8 @@ if __name__ == '__main__':
     parser.add_argument('--mos_objective_mode', type=str, default='dual',
                         choices=['dual', 'a_only'],
                         help='MOS optimization objectives: R+A (dual) or destructiveness A only')
+    parser.add_argument('--mos_boundary_only', type=int, default=0, choices=[0, 1],
+                        help='Ablation only: use the strict feasible guidance-ray boundary and skip evolution')
     parser.add_argument('--mos_diagnostics', type=int, default=0,
                         help='Enable read-only MOS first-batch diagnostics')
     parser.add_argument('--mos_diag_rounds', type=str, default='0,20,40,59',
@@ -62,6 +64,12 @@ if __name__ == '__main__':
                         help='Deterministic validation samples used by effect diagnostics')
     parser.add_argument('--mos_diagnostics_dir', type=str, default='.',
                         help='Directory for MOS diagnostic CSV files')
+    parser.add_argument('--mos_sign_shadow_diagnostics', type=int, default=0,
+                        help='Enable LASA-aware Sign shadow diagnostics (read-only)')
+    parser.add_argument('--mos_sign_shared_candidates', type=int, default=10,
+                        help='Target number of shared Sign-shadow candidates (boundaries are always retained)')
+    parser.add_argument('--mos_lasa_boundary_evals', type=int, default=10,
+                        help='Maximum proxy evaluations for the LASA-faithful boundary search')
 
     # NEW: Scoring system parameters (打分系统参数)
     parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],

@@ -33,6 +33,9 @@ import time
 from ..attack import attack
 from ..attack.mos import compute_surrogate_guidance as compute_surrogate_guidance_mos
 from .mos_diagnostics import clone_updates, diagnostic_rounds, run_first_batch_diagnostics
+from .mos_sign_shadow import enabled_rounds as sign_shadow_rounds
+from .mos_sign_shadow import clone_updates as clone_sign_shadow_updates
+from .mos_sign_shadow import run_sign_shadow_diagnostics
 
 
 def _clone_tensor_state(state):
@@ -183,6 +186,7 @@ def fedavg_all(args):
 
     historical_pop = None
     mos_diag_round_set = diagnostic_rounds(args)
+    mos_sign_shadow_round_set = sign_shadow_rounds(args)
     
     for t in range(args.round):
         global_pre_finite = _tensor_state_is_finite(global_model)
@@ -320,9 +324,17 @@ def fedavg_all(args):
         if benign_updates_finite and malicious_attackers_this_round != 0:
             if args.attack == 'mos_attack' or 'mos' in args.attack: # 请根据你实际传的 args.attack 名字修改
                 # 随便找一个参与了本轮攻击的恶意客户端，拿他的数据生成指导梯度
-                diagnostics_active = t in mos_diag_round_set
+                first_batch_diagnostics_active = t in mos_diag_round_set
+                sign_shadow_active = t in mos_sign_shadow_round_set
+                diagnostics_active = first_batch_diagnostics_active or sign_shadow_active
                 args._mos_diagnostics_active = diagnostics_active
-                diagnostic_updates = clone_updates(local_updates) if diagnostics_active else None
+                args._mos_first_batch_diagnostics_active = first_batch_diagnostics_active
+                # Preserve the pre-attack updates directly on CPU for the
+                # portable Sign snapshot.  This avoids a GiB-scale GPU clone.
+                sign_shadow_updates = (clone_sign_shadow_updates(local_updates, 'cpu')
+                                       if sign_shadow_active else None)
+                diagnostic_updates = (clone_updates(local_updates)
+                                      if first_batch_diagnostics_active else None)
                 malicious_client_idx = [idx for idx in selected_idxs if idx in attacked_idxs][0]
                 ldr_malicious = data_loader_list[malicious_client_idx]
                 
@@ -348,12 +360,27 @@ def fedavg_all(args):
                     # Clearing the value releases the large tensor snapshot
                     # without relying on attribute deletion semantics.
                     args._mos_diagnostic_snapshot = None
-                    run_first_batch_diagnostics(
-                        t, diagnostic_snapshot, diagnostic_updates,
-                        malicious_attackers_this_round, historical_pop_before_round,
-                        g_ce, g_cw, round_start_global_state, net_glob,
-                        dataset_val, dataset_test, args, mos_module)
+                    if sign_shadow_active:
+                        try:
+                            run_sign_shadow_diagnostics(
+                                t, diagnostic_snapshot, sign_shadow_updates,
+                                malicious_attackers_this_round, selected_idxs,
+                                [idx for idx in selected_idxs if idx in attacked_idxs],
+                                round_start_global_state, net_glob, dataset_val,
+                                dataset_test, g_ce, g_cw, args)
+                        except Exception as exc:
+                            print(f'[MOS-SignShadow] round={t} fatal_diagnostic_failure={exc!r}')
+                    if first_batch_diagnostics_active:
+                        run_first_batch_diagnostics(
+                            t, diagnostic_snapshot, diagnostic_updates,
+                            malicious_attackers_this_round, historical_pop_before_round,
+                            g_ce, g_cw, round_start_global_state, net_glob,
+                            dataset_val, dataset_test, args, mos_module)
                 args._mos_diagnostics_active = False
+                args._mos_first_batch_diagnostics_active = False
+                diagnostic_snapshot = None
+                sign_shadow_updates = None
+                diagnostic_updates = None
                 # ===================================================================
             else:
                 local_updates = attack_method(local_updates, args, malicious_attackers_this_round)

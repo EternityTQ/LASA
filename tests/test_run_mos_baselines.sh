@@ -5,6 +5,7 @@ SCRIPT="${ROOT_DIR}/run_mos_baselines_server.sh"
 SELF="${ROOT_DIR}/tests/test_run_mos_baselines.sh"
 
 # Stand-in Python process: orchestration smoke tests never train a model.
+[[ "${1:-}" == -u ]] && shift
 if [[ "${1:-}" == */main.py ]]; then
     attack="" defense="" seed=""
     while (( $# )); do
@@ -35,12 +36,18 @@ for attack in non_attack mos_attack;do for defense in fedavg multi_krum;do
     for artifact in train.log command.txt environment.txt status.txt metrics.csv summary.csv heartbeat.log;do assert_file "${cell}/${artifact}";done
     grep -q -- '--defend1' "${cell}/command.txt"||fail '--defend1 missing'
     grep -q -- '--repeat 1' "${cell}/command.txt"||fail '--repeat 1 missing'
+    grep -q -- ' -u ' "${cell}/command.txt"||fail 'unbuffered Python flag missing'
     if grep -Eq -- '--defend2|--defend3|--defend([ =]|$)' "${cell}/command.txt";then fail 'multi-defense/obsolete flag used';fi
 done;done
 grep -q -- '--mos_adaptive_guided_init 1' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS adaptive init missing'
 grep -q -- '--mos_constraint_mode strict' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS strict mode missing'
 grep -q -- '--mos_objective_mode dual' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS dual mode missing'
 if grep -q -- '--mos_' "${basic}/non_attack/fedavg/seed_1/command.txt";then fail 'baseline received MOS-only arguments';fi
+
+# The component-ablation runner can select the historical fixed initializer.
+fixed="${TEST_ROOT}/fixed"
+run_launcher "${fixed}" ATTACKS=mos_attack DEFENSES=fedavg SEEDS=1 MOS_ADAPTIVE_GUIDED_INIT=0
+grep -q -- '--mos_adaptive_guided_init 0' "${fixed}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS fixed init flag missing'
 for f in results_long.csv matrix_last10_acc.csv matrix_final_acc.csv matrix_acc_drop_vs_clean.csv;do assert_file "${basic}/${f}";done
 awk -F, '$1=="mos_attack"{if(($2=="fedavg"&&$3!="0.100000")||($2=="multi_krum"&&$3!="0.100000"))exit 1;seen++}END{if(seen!=1)exit 1}' "${basic}/matrix_acc_drop_vs_clean.csv"||fail 'clean-relative drop is wrong'
 

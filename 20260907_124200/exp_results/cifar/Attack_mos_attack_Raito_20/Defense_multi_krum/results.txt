@@ -1,0 +1,73 @@
+At round 0: the global model accuracy is 10.00000
+At round 1: the global model accuracy is 10.00000
+At round 2: the global model accuracy is 10.00000
+At round 3: the global model accuracy is 11.02000
+At round 4: the global model accuracy is 10.24000
+At round 5: the global model accuracy is 11.21000
+At round 6: the global model accuracy is 10.05000
+At round 7: the global model accuracy is 10.00000
+At round 8: the global model accuracy is 10.00000
+At round 9: the global model accuracy is 10.00000
+At round 10: the global model accuracy is 10.00000
+At round 11: the global model accuracy is 10.00000
+At round 12: the global model accuracy is 10.22000
+At round 13: the global model accuracy is 10.04000
+At round 14: the global model accuracy is 10.00000
+At round 15: the global model accuracy is 10.00000
+At round 16: the global model accuracy is 10.05000
+At round 17: the global model accuracy is 10.00000
+At round 18: the global model accuracy is 10.00000
+At round 19: the global model accuracy is 10.00000
+At round 20: the global model accuracy is 10.00000
+At round 21: the global model accuracy is 10.08000
+At round 22: the global model accuracy is 10.00000
+At round 23: the global model accuracy is 10.01000
+At round 24: the global model accuracy is 10.00000
+At round 25: the global model accuracy is 10.01000
+At round 26: the global model accuracy is 10.11000
+At round 27: the global model accuracy is 10.34000
+At round 28: the global model accuracy is 11.80000
+At round 29: the global model accuracy is 11.60000
+At round 30: the global model accuracy is 11.33000
+At round 31: the global model accuracy is 14.23000
+At round 32: the global model accuracy is 18.40000
+At round 33: the global model accuracy is 15.53000
+At round 34: the global model accuracy is 21.27000
+At round 35: the global model accuracy is 53.92000
+At round 36: the global model accuracy is 27.55000
+At round 37: the global model accuracy is 33.42000
+At round 38: the global model accuracy is 30.52000
+At round 39: the global model accuracy is 27.77000
+At round 40: the global model accuracy is 27.73000
+At round 41: the global model accuracy is 31.11000
+At round 42: the global model accuracy is 40.89000
+At round 43: the global model accuracy is 31.60000
+At round 44: the global model accuracy is 60.08000
+At round 45: the global model accuracy is 43.38000
+At round 46: the global model accuracy is 60.66000
+At round 47: the global model accuracy is 52.31000
+At round 48: the global model accuracy is 50.14000
+At round 49: the global model accuracy is 43.50000
+At round 50: the global model accuracy is 54.34000
+At round 51: the global model accuracy is 56.87000
+At round 52: the global model accuracy is 46.27000
+At round 53: the global model accuracy is 40.36000
+At round 54: the global model accuracy is 55.87000
+At round 55: the global model accuracy is 48.38000
+At round 56: the global model accuracy is 63.82000
+At round 57: the global model accuracy is 58.01000
+At round 58: the global model accuracy is 59.70000
+At round 59: the global model accuracy is 61.51000
+-----
+------------------------------
+dataset is: cifar, 
+attack is: mos_attack, 
+defend methods: ['multi_krum'], 
+DP: False, 
+num_attackers is: 20, 
+sparsity is: 0.3, 
+repeated scores: [63.82], 
+avg of the scores 63.82, 
+repeated poisoned ratios [np.float64(0.216)], 
+avg of the poisoned ratios 0.216, 
+------------------------------

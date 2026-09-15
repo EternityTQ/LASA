@@ -12,6 +12,9 @@ STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
 RESUME_DIR="${RESUME_DIR:-}"
 PYTHON_BIN="${MOS_BASELINE_PYTHON_BIN:-python}"       # smoke-test hook
 HEARTBEAT_SECONDS="${MOS_BASELINE_HEARTBEAT_SECONDS:-60}"
+MOS_OBJECTIVE_MODE="${MOS_OBJECTIVE_MODE:-dual}"
+MOS_BOUNDARY_ONLY="${MOS_BOUNDARY_ONLY:-0}"
+MOS_ADAPTIVE_GUIDED_INIT="${MOS_ADAPTIVE_GUIDED_INIT:-1}"
 
 VALID_ATTACKS=(agrTailoredTrmean agrAgnosticMinMax agrAgnosticMinSum signflip_attack noise_attack random_attack lie_attack byzmean_attack non_attack mos_attack skew_attack)
 VALID_DEFENSES=(fedavg signguard dnc lasa bulyan tr_mean multi_krum sparsefed geomed rlr lfd)
@@ -28,6 +31,9 @@ contains() { local wanted="$1" item; shift; for item in "$@"; do [[ "${item}" ==
 [[ "${ROUNDS}" =~ ^[1-9][0-9]*$ ]] || die "ROUNDS must be positive"
 [[ "${STOP_ON_ERROR}" == 0 || "${STOP_ON_ERROR}" == 1 ]] || die "STOP_ON_ERROR must be 0 or 1"
 [[ "${HEARTBEAT_SECONDS}" =~ ^[1-9][0-9]*$ ]] || die "heartbeat interval must be positive"
+[[ "${MOS_OBJECTIVE_MODE}" == dual || "${MOS_OBJECTIVE_MODE}" == a_only ]] || die "MOS_OBJECTIVE_MODE must be dual or a_only"
+[[ "${MOS_BOUNDARY_ONLY}" == 0 || "${MOS_BOUNDARY_ONLY}" == 1 ]] || die "MOS_BOUNDARY_ONLY must be 0 or 1"
+[[ "${MOS_ADAPTIVE_GUIDED_INIT}" == 0 || "${MOS_ADAPTIVE_GUIDED_INIT}" == 1 ]] || die "MOS_ADAPTIVE_GUIDED_INIT must be 0 or 1"
 
 parse_list() {
     local source="$1" kind="$2" valid_name="$3" output_name="$4" raw value
@@ -200,17 +206,20 @@ next_attempt_dir(){ local n=1;while [[ -e "$1/attempt_${n}" ]];do ((n+=1));done;
 run_one() {
     local attack="$1" defense="$2" seed="$3" cell="${OUTPUT_ROOT}/$1/$2/seed_$3" attempt config_file fifo train_status=0 final_status
     RUN_ONE_FAILED=0
-    if [[ -f "${cell}/status.txt" ]]&&grep -qx 'status=COMPLETED' "${cell}/status.txt";then
+    if [[ -f "${cell}/status.txt" ]] \
+       && grep -qx 'status=COMPLETED' "${cell}/status.txt" \
+       && grep -qx "target_rounds=${ROUNDS}" "${cell}/status.txt" \
+       && awk -F= -v rounds="${ROUNDS}" '$1=="observed_rounds" && $2+0>=rounds{ok=1}END{exit !ok}' "${cell}/status.txt"; then
         printf 'Skipping completed cell: attack=%s defense=%s seed=%s\n' "${attack}" "${defense}" "${seed}";return 0
     fi
     mkdir -p "${cell}";attempt="$(next_attempt_dir "${cell}")";mkdir -p "${attempt}/config";cp -R "${ROOT_DIR}/config/." "${attempt}/config/"
     config_file="${attempt}/config/attack/cifar/basee.yaml";sed -i -E "s/^round:[[:space:]]*[0-9]+.*/round: ${ROUNDS} # rounds of training/" "${config_file}";ln -s "${ROOT_DIR}/data" "${attempt}/data"
-    local -a command=("${PYTHON_BIN}" "${ROOT_DIR}/main.py" --dataset cifar --num_attackers 20 --attack "${attack}" --defend1 "${defense}" --seed "${seed}" --gpu "${GPU}" --repeat 1)
-    if [[ "${attack}" == mos_attack ]];then command+=(--mos_adaptive_guided_init 1 --mos_constraint_mode strict --mos_objective_mode dual);fi
+    local -a command=("${PYTHON_BIN}" -u "${ROOT_DIR}/main.py" --dataset cifar --num_attackers 20 --attack "${attack}" --defend1 "${defense}" --seed "${seed}" --gpu "${GPU}" --repeat 1)
+    if [[ "${attack}" == mos_attack ]];then command+=(--mos_adaptive_guided_init "${MOS_ADAPTIVE_GUIDED_INIT}" --mos_constraint_mode strict --mos_objective_mode "${MOS_OBJECTIVE_MODE}" --mos_boundary_only "${MOS_BOUNDARY_ONLY}");fi
     { printf 'cd %q\n' "${attempt}";printf 'PYTHONPATH=%q ' "${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}";printf '%q ' "${command[@]}";printf '\n';} > "${attempt}/command.txt"
     {
         printf 'ATTACK=%s\nDEFENSE=%s\nSEED=%s\nGPU=%s\nROUNDS=%s\nDATASET=cifar\nNUM_ATTACKERS=20\nREPEAT=1\nHOSTNAME=%s\nGIT_COMMIT=%s\n' "${attack}" "${defense}" "${seed}" "${GPU}" "${ROUNDS}" "${HOST_NAME}" "${GIT_COMMIT}"
-        printf 'MOS_ADAPTIVE_GUIDED_INIT=%s\nMOS_CONSTRAINT_MODE=%s\nMOS_OBJECTIVE_MODE=%s\n' "$([[ "${attack}" == mos_attack ]]&&printf 1||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf strict||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf dual||printf '')"
+        printf 'MOS_ADAPTIVE_GUIDED_INIT=%s\nMOS_CONSTRAINT_MODE=%s\nMOS_OBJECTIVE_MODE=%s\nMOS_BOUNDARY_ONLY=%s\n' "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_ADAPTIVE_GUIDED_INIT}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf strict||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_OBJECTIVE_MODE}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_BOUNDARY_ONLY}"||printf '')"
         printf 'GIT_STATUS_BEGIN\n';git -C "${ROOT_DIR}" status --short 2>/dev/null||true;printf 'GIT_STATUS_END\n'
     } > "${attempt}/environment.txt"
     CURRENT_ATTACK="${attack}";CURRENT_DEFENSE="${defense}";CURRENT_SEED="${seed}";CURRENT_CELL_DIR="${cell}";CURRENT_ATTEMPT_DIR="${attempt}";CURRENT_START_EPOCH="$(date +%s)";CURRENT_START_TIME="$(timestamp)";CURRENT_SIGNAL="";CURRENT_FINALIZED=0;LAST_SHELL_ERROR=""

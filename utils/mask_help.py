@@ -7,7 +7,10 @@ def generate_init_mask(global_model):
         
         if len(global_model[key].size()) == 4 or len(global_model[key].size()) == 2:
             # Need to change the dtype, but now only for testing
-            mask[key] = torch.ones_like(global_model[key], dtype=torch.float32, requires_grad=False).cuda()
+            # Keep masks on the update's own device.  This is numerically
+            # identical on CUDA and also lets LASA diagnostics replay on CPU.
+            mask[key] = torch.ones_like(global_model[key], dtype=torch.float32,
+                                        requires_grad=False)
     
     return mask
 
