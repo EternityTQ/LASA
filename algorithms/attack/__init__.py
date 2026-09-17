@@ -4,6 +4,7 @@ from .naive import *
 from .mos import *
 from .skew import *
 from .scalesign import *
+from .poisonedfl import *
 
 def attack(attack):
 
@@ -21,6 +22,7 @@ def attack(attack):
                'mos_attack': mos_attack,
                'skew_attack': skew_attack,
                'scalesign': scalesign_attack,
+               'poisonedfl_attack': poisonedfl_attack,
     }
 
     return attacks[attack]

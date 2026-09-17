@@ -7,6 +7,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import Dataset
 from collections import defaultdict
 import json
+import hashlib
 
 
 def read_dir(data_dir):
@@ -180,51 +181,56 @@ def load_partition(args):
                     with open(pik_path, 'wb') as f: 
                         dill.dump(dict_users, f)
 
-    elif args.dataset == 'fmnist':
+    elif args.dataset in ('fmnist', 'noniidfmnist'):
         path = './data/dataset/fmnist'
         trans_fmnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         dataset_train = datasets.FashionMNIST(path, train=True, download=True, transform=trans_fmnist)
         dataset_test = datasets.FashionMNIST(path, train=False, download=True, transform=trans_fmnist)
         args.num_classes = 10
 
-        # pik_name = args.config_name.split('/')[-1].split('.')[0]
-        # pik_path = os.path.join(path, pik_name+'_dict_users.pik')
-        pik_path = os.path.join(path,'fmnist_dict_users.pik')
-        if os.path.isfile(pik_path):
-            with open(pik_path, 'rb') as f: 
-                dict_users = dill.load(f) 
-        if len(dict_users) < 1:
-            if args.iid:
-                dict_users = iid(dataset_train, args.num_users)
-                if args.freeze_datasplit:
-                    with open(pik_path, 'wb') as f: 
-                        dill.dump(dict_users, f)
-            else:
-                dict_users = noniid(dataset_train, args.num_users)
-                if args.freeze_datasplit:
-                    with open(pik_path, 'wb') as f: 
-                        dill.dump(dict_users, f)
-
-    elif args.dataset == 'noniidfmnist':
-        path = './data/dataset/fmnist'
-        trans_fmnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.FashionMNIST(path, train=True, download=True, transform=trans_fmnist)
-        dataset_test = datasets.FashionMNIST(path, train=False, download=True, transform=trans_fmnist)
-        args.num_classes = 10
-
-        # pik_name = args.config_name.split('/')[-1].split('.')[0]
-        # pik_path = os.path.join(path, pik_name+'_dict_users.pik')
-        pik_path = os.path.join(path,'fmnist_dict_users.pik')
-        if os.path.isfile(pik_path):
-            with open(pik_path, 'rb') as f: 
-                dict_users = dill.load(f) 
-        if len(dict_users) < 1:
-            
-            dict_users = noniid(dataset_train, args.num_users)
+        # v2 never reads legacy 6,000-user caches. Include actual split mode,
+        # user count, dataset length and seed, and validate cached assignments.
+        split_iid = args.dataset == 'fmnist' and bool(args.iid)
+        split_seed = int(args.seed)
+        split_mode = 'iid' if split_iid else 'noniid'
+        pik_path = os.path.join(
+            path, f'fmnist_v2_{split_mode}_users_{args.num_users}'
+            f'_n_{len(dataset_train)}_seed_{split_seed}.pik')
+        cache_hit = args.freeze_datasplit and os.path.isfile(pik_path)
+        if cache_hit:
+            with open(pik_path, 'rb') as f:
+                dict_users = dill.load(f)
+        else:
+            # Cache hit/miss must not change subsequent model initialization,
+            # attacker identities or client sampling (all attacks share a split).
+            split_rng_state = np.random.get_state()
+            try:
+                np.random.seed(split_seed)
+                dict_users = (iid if split_iid else noniid)(dataset_train, args.num_users)
+            finally:
+                np.random.set_state(split_rng_state)
+        if not isinstance(dict_users, dict) or set(dict_users) != set(range(args.num_users)):
+            raise ValueError(f'Invalid FMNIST split client keys: {pik_path}')
+        assignments = [sorted(dict_users[i]) for i in range(args.num_users)]
+        indices = np.asarray([idx for row in assignments for idx in row])
+        if (not all(assignments) or not np.issubdtype(indices.dtype, np.integer)
+                or indices.min() < 0 or indices.max() >= len(dataset_train)
+                or len(np.unique(indices)) != len(indices)
+                or (split_iid and any(len(row) != len(dataset_train) // args.num_users
+                                      for row in assignments))):
+            raise ValueError(f'Invalid FMNIST split indices: {pik_path}')
+        if not cache_hit:
             if args.freeze_datasplit:
-                with open(pik_path, 'wb') as f: 
+                temp_path = f'{pik_path}.{os.getpid()}.tmp'
+                with open(temp_path, 'wb') as f:
                     dill.dump(dict_users, f)
-            
+                os.replace(temp_path, pik_path)
+        split_hash = hashlib.sha256(json.dumps(
+            [[int(idx) for idx in row] for row in assignments],
+            separators=(',', ':')).encode()).hexdigest()
+        print(f'[Split] dataset={args.dataset} mode={split_mode} users={args.num_users} '
+              f'seed={split_seed} cache_hit={int(cache_hit)} path={pik_path} sha256={split_hash}')
+
     elif args.dataset == 'svhn':
         path = './data/dataset/svhn'
         trans_svhn = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.43090966, 0.4302428, 0.44634357), (0.19759192, 0.20029082, 0.19811132))])

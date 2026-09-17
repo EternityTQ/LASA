@@ -185,6 +185,13 @@ def fedavg_all(args):
     mos_module = importlib.import_module('..attack.mos', package=__package__)
 
     historical_pop = None
+    # PoisonedFL is stateful across rounds.  Keep its state local to this
+    # fedavg_all invocation so repeat runs and matrix cells cannot leak state.
+    poisonedfl_state = None
+    poisonedfl_trainable_keys = tuple(
+        name for name, parameter in net_glob.named_parameters()
+        if parameter.requires_grad and parameter.is_floating_point()
+    )
     mos_diag_round_set = diagnostic_rounds(args)
     mos_sign_shadow_round_set = sign_shadow_rounds(args)
     
@@ -319,9 +326,24 @@ def fedavg_all(args):
 
         ################## <<< Attack Point 2: local model poisoning attacks
         ################## <<< Attack Point 2: local model poisoning attacks
+        # The attack replaces state tensors rather than mutating them in place;
+        # a shallow snapshot also preserves history when finite-audit skips it.
+        poisonedfl_state_before_round = copy.copy(poisonedfl_state)
         if not benign_updates_finite and malicious_attackers_this_round != 0:
             print(f"[FiniteAudit] round={t} mos_skipped_due_to_nonfinite_benign=True")
-        if benign_updates_finite and malicious_attackers_this_round != 0:
+        if benign_updates_finite and args.attack == 'poisonedfl_attack':
+            # Call even when no malicious client was sampled.  PoisonedFL must
+            # still observe the accepted global-model trajectory every round.
+            local_updates, poisonedfl_state = attack_method(
+                local_updates,
+                args,
+                malicious_attackers_this_round,
+                global_model=round_start_global_state,
+                trainable_keys=poisonedfl_trainable_keys,
+                round_idx=t,
+                state=poisonedfl_state,
+            )
+        elif benign_updates_finite and malicious_attackers_this_round != 0:
             if args.attack == 'mos_attack' or 'mos' in args.attack: # 请根据你实际传的 args.attack 名字修改
                 # 随便找一个参与了本轮攻击的恶意客户端，拿他的数据生成指导梯度
                 first_batch_diagnostics_active = t in mos_diag_round_set
@@ -406,6 +428,8 @@ def fedavg_all(args):
         # the source signal instead of hiding it with nan_to_num.
         if not aggregate_input_finite:
             historical_pop = historical_pop_before_round
+            if args.attack == 'poisonedfl_attack':
+                poisonedfl_state = poisonedfl_state_before_round
             mos_module._LAST_VALID_GUIDANCE = cached_guidance_before_round
             global_model = _clone_tensor_state(last_good_global_state)
             args._anomaly_counter = getattr(args, '_anomaly_counter', 0) + 1
@@ -635,6 +659,8 @@ def fedavg_all(args):
             # history are restored together; no bad state is promoted.
             global_model = _clone_tensor_state(last_good_global_state)
             historical_pop = historical_pop_before_round
+            if args.attack == 'poisonedfl_attack':
+                poisonedfl_state = poisonedfl_state_before_round
             mos_module._LAST_VALID_GUIDANCE = cached_guidance_before_round
             args._anomaly_counter = getattr(args, '_anomaly_counter', 0) + 1
             print(f"[FiniteAudit] round={t} rejected=True rollback=True "

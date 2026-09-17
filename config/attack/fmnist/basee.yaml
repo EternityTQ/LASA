@@ -1,16 +1,16 @@
 _base_ : ['../../defense/epfed.yaml']
 
 ############## base differential #############
-num_users: 6000 # number of users: K
-num_selected_users: 100 # number of selected users: 100, for shakespeare, it is 10
-round: 180 # rounds of training
-tau: 5
-batch_size: 10 # local batch size
+num_users: 100 # align the client pool with the CIFAR protocol
+num_selected_users: 25 # 25% participation, as in the CIFAR protocol
+round: 200 # rounds of training
+tau: 3
+batch_size: 64 # local batch size
 local_lr: 0.1 # local learning rate
 local_momentum: 0.9 # SGD Momentum default 0.5
-decay_weight: 0.999 # learning rate decay weight default 0.5
+decay_weight: 0.99 # learning rate decay weight default 0.5
 global_momentum: 0.9 # global momentum
-clip: 1.0 # clipping threshold
+clip: 2.0 # clipping threshold
 ########### base differential ends ###########
 
 ############# ep differential ################
@@ -25,7 +25,7 @@ method: fedavg_all
 # defend: signguard
 
 # Model
-# model: cnnfmnist
+model: cnnfmnist
 
 # Dataset configure
 data_type: image

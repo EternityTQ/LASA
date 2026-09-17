@@ -2,18 +2,33 @@
 set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${ROOT_DIR}/run_mos_baselines_server.sh"
+COMPONENT_SCRIPT="${ROOT_DIR}/run_cage_component_ablation_server.sh"
 SELF="${ROOT_DIR}/tests/test_run_mos_baselines.sh"
 
 # Stand-in Python process: orchestration smoke tests never train a model.
 [[ "${1:-}" == -u ]] && shift
 if [[ "${1:-}" == */main.py ]]; then
-    attack="" defense="" seed=""
+    attack="" defense="" seed="" objective=dual adaptive=1 boundary=0 radial=1
     while (( $# )); do
-        case "$1" in --attack)attack="$2";shift 2;;--defend1)defense="$2";shift 2;;--seed)seed="$2";shift 2;;*)shift;;esac
+        case "$1" in
+          --attack)attack="$2";shift 2;;--defend1)defense="$2";shift 2;;--seed)seed="$2";shift 2;;
+          --mos_objective_mode)objective="$2";shift 2;;--mos_adaptive_guided_init)adaptive="$2";shift 2;;
+          --mos_boundary_only)boundary="$2";shift 2;;--mos_use_radial_constraint)radial="$2";shift 2;;
+          *)shift;;
+        esac
     done
     acc="$(awk -v s="${seed}" -v a="${attack}" 'BEGIN{printf "%.3f",0.50+s/100+(a=="signflip_attack"?-0.10:0)}')"
-    printf '[FiniteAudit] round=0 global_post_finite=True first_bad_stage=none rollback=False\n'
-    printf 't 0: train_loss = 1.2500, test_acc = %s\n' "${acc}"
+    if [[ "${attack}" == mos_attack ]]; then
+        search_mode=evolutionary;search_enabled=1;constraints=radial,sign
+        [[ "${boundary}" == 0 ]] || { search_mode=boundary_only;search_enabled=0; }
+        [[ "${radial}" == 1 ]] || constraints=sign
+        printf '[CAGE_CONFIG] objective=%s adaptive_init=%s search_mode=%s constraints=%s evolutionary_search_enabled=%s\n' "${objective}" "${adaptive}" "${search_mode}" "${constraints}" "${search_enabled}"
+        [[ "${search_enabled}" == 0 ]] || printf '[MOS-Core] Gen 1/1:\n'
+    fi
+    for ((round=0; round<ROUNDS; round++)); do
+        printf '[FiniteAudit] round=%s global_post_finite=True first_bad_stage=none rollback=False\n' "${round}"
+        printf 't %s: train_loss = 1.2500, test_acc = %s\n' "${round}" "${acc}"
+    done
     [[ "${MOCK_SLEEP:-0}" == 0 ]] || sleep "${MOCK_SLEEP}"
     if [[ "${attack}" == "${MOCK_FAIL_ATTACK:-}" && "${defense}" == "${MOCK_FAIL_DEFENSE:-${defense}}" ]]; then
         printf 'Traceback (most recent call last):\nRuntimeError: injected smoke-test failure\n' >&2;exit "${MOCK_EXIT_CODE:-7}"
@@ -42,12 +57,20 @@ done;done
 grep -q -- '--mos_adaptive_guided_init 1' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS adaptive init missing'
 grep -q -- '--mos_constraint_mode strict' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS strict mode missing'
 grep -q -- '--mos_objective_mode dual' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS dual mode missing'
+grep -q -- '--mos_use_radial_constraint 1' "${basic}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS radial constraint flag missing'
 if grep -q -- '--mos_' "${basic}/non_attack/fedavg/seed_1/command.txt";then fail 'baseline received MOS-only arguments';fi
 
 # The component-ablation runner can select the historical fixed initializer.
 fixed="${TEST_ROOT}/fixed"
 run_launcher "${fixed}" ATTACKS=mos_attack DEFENSES=fedavg SEEDS=1 MOS_ADAPTIVE_GUIDED_INIT=0
 grep -q -- '--mos_adaptive_guided_init 0' "${fixed}/mos_attack/fedavg/seed_1/command.txt"||fail 'MOS fixed init flag missing'
+
+# A completed cell with a different labeled configuration must not be reused.
+config_resume="${TEST_ROOT}/config-resume"
+run_launcher "${config_resume}" ATTACKS=mos_attack DEFENSES=fedavg SEEDS=1 MOS_RUN_VARIANT=fixed_init MOS_ADAPTIVE_GUIDED_INIT=0
+run_launcher "${config_resume}" ATTACKS=mos_attack DEFENSES=fedavg SEEDS=1 MOS_RUN_VARIANT=full MOS_ADAPTIVE_GUIDED_INIT=1
+assert_file "${config_resume}/mos_attack/fedavg/seed_1/attempt_2/status.txt"
+grep -Fqx 'MOS_RUN_VARIANT=full' "${config_resume}/mos_attack/fedavg/seed_1/environment.txt"||fail 'config-aware resume did not replace stale variant'
 for f in results_long.csv matrix_last10_acc.csv matrix_final_acc.csv matrix_acc_drop_vs_clean.csv;do assert_file "${basic}/${f}";done
 awk -F, '$1=="mos_attack"{if(($2=="fedavg"&&$3!="0.100000")||($2=="multi_krum"&&$3!="0.100000"))exit 1;seen++}END{if(seen!=1)exit 1}' "${basic}/matrix_acc_drop_vs_clean.csv"||fail 'clean-relative drop is wrong'
 
@@ -84,4 +107,15 @@ awk -F, '$1=="signflip_attack"{if($2!="0.100000")exit 1;seen=1}END{if(!seen)exit
 # Heartbeat stops with its child.
 heartbeat="${TEST_ROOT}/heartbeat";run_launcher "${heartbeat}" ATTACKS=lie_attack DEFENSES=dnc SEEDS=1 MOCK_SLEEP=2
 hb="${heartbeat}/lie_attack/dnc/seed_1/heartbeat.log";[[ -s "${hb}" ]]||fail 'heartbeat empty';lines="$(wc -l < "${hb}")";sleep 2;[[ "$(wc -l < "${hb}")" == "${lines}" ]]||fail 'heartbeat did not stop'
+
+# Component runner: five isolated variants, runtime configs, and provenance audit.
+component="${TEST_ROOT}/component";mkdir -p "${component}"
+env RESUME="${component}" ROUNDS=1 ONLY_DEFENSE=tr_mean MOS_BASELINE_PYTHON_BIN="${SELF}" MOS_BASELINE_HEARTBEAT_SECONDS=1 bash "${COMPONENT_SCRIPT}"
+for variant in full a_only boundary_only fixed_init no_radial;do
+    cell="${component}/${variant}/mos_attack/tr_mean/seed_1";assert_status "${cell}" COMPLETED
+    grep -Fq "MOS_RUN_VARIANT=${variant}" "${cell}/environment.txt"||fail "missing variant identity for ${variant}"
+done
+grep -Fq 'evolutionary_search_enabled=0' "${component}/boundary_only/mos_attack/tr_mean/seed_1/train.log"||fail 'boundary-only runtime config missing'
+if grep -Fq '[MOS-Core] Gen ' "${component}/boundary_only/mos_attack/tr_mean/seed_1/train.log";then fail 'boundary-only entered evolution';fi
+awk -F, 'NR>1&&$1=="tr_mean"{if($15!=1)exit 1;n++}END{if(n!=5)exit 1}' "${component}/ablation_summary.csv"||fail 'component provenance audit failed'
 printf 'PASS: MOS baseline matrix smoke tests\n'

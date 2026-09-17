@@ -517,18 +517,20 @@ def mos_attack(
     sign_layer_reduce = getattr(args, 'sign_layer_reduce', 'quantile')
     sign_layer_quantile = getattr(args, 'sign_layer_quantile', 0.9)
 
-    constraints = [
-        RadialConstraint(weight=radial_weight, quantile=radius_quantile),
-        SignConstraint(
-            weight=sign_weight,
-            quantile=radius_quantile,
-            layer_reduce=sign_layer_reduce,
-            layer_quantile=sign_layer_quantile
-        )
-    ]
+    use_radial_constraint = bool(getattr(args, 'mos_use_radial_constraint', True))
+    constraints = []
+    if use_radial_constraint:
+        constraints.append(RadialConstraint(weight=radial_weight, quantile=radius_quantile))
+    constraints.append(SignConstraint(
+        weight=sign_weight,
+        quantile=radius_quantile,
+        layer_reduce=sign_layer_reduce,
+        layer_quantile=sign_layer_quantile
+    ))
 
-    print(f"[MOS-Core] Enabled constraints: Radial, Sign")
-    print(f"[MOS-Core] Radial weight: {radial_weight}")
+    print(f"[MOS-Core] Enabled constraints: {', '.join(c.name.capitalize() for c in constraints)}")
+    if use_radial_constraint:
+        print(f"[MOS-Core] Radial weight: {radial_weight}")
     print(f"[MOS-Core] Sign weight: {sign_weight}, layer_reduce: {sign_layer_reduce}")
 
     # Fit constraints on benign updates
@@ -558,6 +560,12 @@ def mos_attack(
         raise ValueError("mos_boundary_only requires mos_adaptive_guided_init=1")
     if boundary_only and constraint_mode != 'strict':
         raise ValueError("mos_boundary_only requires mos_constraint_mode=strict")
+    search_enabled = not boundary_only
+    print(f"[CAGE_CONFIG] objective={objective_mode} "
+          f"adaptive_init={int(adaptive_guided_init)} "
+          f"search_mode={'evolutionary' if search_enabled else 'boundary_only'} "
+          f"constraints={','.join(c.name for c in constraints)} "
+          f"evolutionary_search_enabled={int(search_enabled)}")
     if adaptive_guided_init:
         alpha_feasible = _estimate_feasible_alpha(
             benign_mean, max_dev_threshold, g_attack, constraints, context
@@ -662,6 +670,8 @@ def mos_attack(
               f"(noise_scale={random_noise_scale})")
 
     ray_diagnostics = bool(getattr(args, 'mos_inject_attack_ray_diagnostics', False))
+    if boundary_only and ray_diagnostics:
+        raise ValueError("mos_boundary_only cannot inject NSGA-II ray diagnostics")
     ray_alphas = [0.0, 0.005, 0.01, 0.015, 0.02, 0.025, 0.03]
     provenance = [None] * pop_size
     if ray_diagnostics:
@@ -852,16 +862,29 @@ def mos_attack(
     final_norms = torch.norm(population - benign_mean, dim=1)
     final_budget_ratios = final_norms / max_dev_threshold
 
-    # Select best solution with Deb constraint-domination
-    best_idx, selection_diagnostics = select_final_solution(
-        population,
-        final_objectives,
-        benign_mean=benign_mean,
-        total_cv=_selection_cv(final_cv, constraint_mode, objective_mode),
-        constraint_scores=final_constraint_scores,
-        scores_dict=final_scores_dict,
-        args=args
-    )
+    # Boundary-only has exactly one explicitly constructed candidate.  Select
+    # it directly so this path never enters NSGA-II/Pareto selection code.
+    if boundary_only:
+        best_idx = 0
+        selection_diagnostics = {
+            'selection_mode': 'boundary_only',
+            'selected_idx': 0,
+            'candidates_after_floor': 1,
+            'feasible_count': int(final_cv[0].item() <= 1e-6),
+            'feasible_ratio': float(final_cv[0].item() <= 1e-6),
+            'selected_cv': final_cv[0].item(),
+        }
+        print("[MOS-Core] boundary_only direct candidate selection; NSGA-II selection skipped")
+    else:
+        best_idx, selection_diagnostics = select_final_solution(
+            population,
+            final_objectives,
+            benign_mean=benign_mean,
+            total_cv=_selection_cv(final_cv, constraint_mode, objective_mode),
+            constraint_scores=final_constraint_scores,
+            scores_dict=final_scores_dict,
+            args=args
+        )
 
     if ray_diagnostics:
         survivors = [alpha for alpha in provenance if alpha is not None]
@@ -917,13 +940,14 @@ def mos_attack(
             'g_attack': g_attack.detach().clone(),
             'max_dev_threshold': max_dev_threshold.detach().clone(),
             'layer_dims': list(layer_dims),
-            'radial_threshold': next(
-                constraint.threshold.detach().clone() for constraint in constraints
-                if constraint.name == 'radial'),
             'sign_threshold': next(
                 constraint.threshold.detach().clone() for constraint in constraints
                 if constraint.name == 'sign'),
         }
+        radial = next((constraint for constraint in constraints
+                       if constraint.name == 'radial'), None)
+        if radial is not None:
+            snapshot['radial_threshold'] = radial.threshold.detach().clone()
         if getattr(args, '_mos_first_batch_diagnostics_active', False):
             snapshot.update({
                 'benign_grads': benign_grads.detach().clone(),

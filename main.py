@@ -27,7 +27,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_attackers', type=int, default=20, help='Bayzatine attckers')
     parser.add_argument('--beta', type=float, default=0, help='ema')
     parser.add_argument('--attack', type=str, default='agrTailoredTrmean', help='attack method', choices=['agrTailoredTrmean', 'agrAgnosticMinMax', 'agrAgnosticMinSum', 'signflip_attack', 'noise_attack', \
-                'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack','mos_attack', 'skew_attack'])
+                'random_attack', 'lie_attack', 'byzmean_attack', 'non_attack','mos_attack', 'skew_attack',
+                'poisonedfl_attack'])
     parser.add_argument('--defend1', type=str, default='lasa', help='primary defend method', choices=['fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
     parser.add_argument('--defend2', type=str, default=None, help='secondary defend method (optional)', choices=[None, 'fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
     parser.add_argument('--defend3', type=str, default=None, help='tertiary defend method (optional)', choices=[None, 'fedavg', 'signguard', 'dnc', 'lasa', 'bulyan', 'tr_mean', 'multi_krum', 'sparsefed', 'geomed','rlr', 'lfd'])
@@ -54,6 +55,8 @@ if __name__ == '__main__':
                         help='MOS optimization objectives: R+A (dual) or destructiveness A only')
     parser.add_argument('--mos_boundary_only', type=int, default=0, choices=[0, 1],
                         help='Ablation only: use the strict feasible guidance-ray boundary and skip evolution')
+    parser.add_argument('--mos_use_radial_constraint', type=int, default=1, choices=[0, 1],
+                        help='Include the Radial constraint in CAGE feasibility and ranking')
     parser.add_argument('--mos_diagnostics', type=int, default=0,
                         help='Enable read-only MOS first-batch diagnostics')
     parser.add_argument('--mos_diag_rounds', type=str, default='0,20,40,59',
@@ -70,6 +73,12 @@ if __name__ == '__main__':
                         help='Target number of shared Sign-shadow candidates (boundaries are always retained)')
     parser.add_argument('--mos_lasa_boundary_evals', type=int, default=10,
                         help='Maximum proxy evaluations for the LASA-faithful boundary search')
+
+    # PoisonedFL defaults from the official CIFAR/FashionMNIST experiments.
+    parser.add_argument('--poisonedfl_scale_factor', type=float, default=8.0,
+                        help='PoisonedFL initial attack scale c^0')
+    parser.add_argument('--poisonedfl_feedback_interval', type=int, default=50,
+                        help='PoisonedFL feedback interval e in FL rounds')
 
     # NEW: Scoring system parameters (打分系统参数)
     parser.add_argument('--score_mode', type=str, default='sigmoid', choices=['sigmoid', 'relu', 'linear'],

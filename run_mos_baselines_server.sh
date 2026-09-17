@@ -3,6 +3,10 @@ set -Eeuo pipefail
 
 # Resumable CIFAR attack/defense baseline matrix. Does not daemonize itself.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATASET="${BASELINE_DATASET:-cifar}"
+PROTOCOL="${BASELINE_PROTOCOL:-legacy_cifar}"
+POISONEDFL_SCALE_FACTOR="${POISONEDFL_SCALE_FACTOR:-8}"
+POISONEDFL_FEEDBACK_INTERVAL="${POISONEDFL_FEEDBACK_INTERVAL:-50}"
 GPU="${GPU:-2}"
 ROUNDS="${ROUNDS:-200}"
 ATTACKS="${ATTACKS:-non_attack,signflip_attack,lie_attack,agrAgnosticMinMax,mos_attack}"
@@ -15,8 +19,10 @@ HEARTBEAT_SECONDS="${MOS_BASELINE_HEARTBEAT_SECONDS:-60}"
 MOS_OBJECTIVE_MODE="${MOS_OBJECTIVE_MODE:-dual}"
 MOS_BOUNDARY_ONLY="${MOS_BOUNDARY_ONLY:-0}"
 MOS_ADAPTIVE_GUIDED_INIT="${MOS_ADAPTIVE_GUIDED_INIT:-1}"
+MOS_USE_RADIAL_CONSTRAINT="${MOS_USE_RADIAL_CONSTRAINT:-1}"
+MOS_RUN_VARIANT="${MOS_RUN_VARIANT:-}"
 
-VALID_ATTACKS=(agrTailoredTrmean agrAgnosticMinMax agrAgnosticMinSum signflip_attack noise_attack random_attack lie_attack byzmean_attack non_attack mos_attack skew_attack)
+VALID_ATTACKS=(agrTailoredTrmean agrAgnosticMinMax agrAgnosticMinSum signflip_attack noise_attack random_attack lie_attack byzmean_attack non_attack mos_attack skew_attack poisonedfl_attack)
 VALID_DEFENSES=(fedavg signguard dnc lasa bulyan tr_mean multi_krum sparsefed geomed rlr lfd)
 CURRENT_ATTACK="" CURRENT_DEFENSE="" CURRENT_SEED="" CURRENT_CELL_DIR="" CURRENT_ATTEMPT_DIR=""
 CURRENT_START_EPOCH="" CURRENT_START_TIME="" CURRENT_CHILD_PID="" CURRENT_HEARTBEAT_PID="" CURRENT_TEE_PID=""
@@ -27,6 +33,10 @@ HOST_NAME="$(hostname 2>/dev/null || printf unavailable)"
 timestamp() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 2; }
 contains() { local wanted="$1" item; shift; for item in "$@"; do [[ "${item}" == "${wanted}" ]] && return 0; done; return 1; }
+[[ "${DATASET}" == cifar || "${DATASET}" == fmnist ]] || die "unsupported dataset"
+[[ "${PROTOCOL}" =~ ^[a-zA-Z0-9_-]+$ ]] || die "invalid protocol label"
+[[ "${POISONEDFL_SCALE_FACTOR}" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v x="${POISONEDFL_SCALE_FACTOR}" 'BEGIN{exit !(x>0)}' || die "PoisonedFL scale must be positive"
+[[ "${POISONEDFL_FEEDBACK_INTERVAL}" =~ ^[1-9][0-9]*$ ]] || die "PoisonedFL interval must be positive"
 [[ "${GPU}" =~ ^-?[0-9]+$ ]] || die "GPU must be an integer"
 [[ "${ROUNDS}" =~ ^[1-9][0-9]*$ ]] || die "ROUNDS must be positive"
 [[ "${STOP_ON_ERROR}" == 0 || "${STOP_ON_ERROR}" == 1 ]] || die "STOP_ON_ERROR must be 0 or 1"
@@ -34,6 +44,7 @@ contains() { local wanted="$1" item; shift; for item in "$@"; do [[ "${item}" ==
 [[ "${MOS_OBJECTIVE_MODE}" == dual || "${MOS_OBJECTIVE_MODE}" == a_only ]] || die "MOS_OBJECTIVE_MODE must be dual or a_only"
 [[ "${MOS_BOUNDARY_ONLY}" == 0 || "${MOS_BOUNDARY_ONLY}" == 1 ]] || die "MOS_BOUNDARY_ONLY must be 0 or 1"
 [[ "${MOS_ADAPTIVE_GUIDED_INIT}" == 0 || "${MOS_ADAPTIVE_GUIDED_INIT}" == 1 ]] || die "MOS_ADAPTIVE_GUIDED_INIT must be 0 or 1"
+[[ "${MOS_USE_RADIAL_CONSTRAINT}" == 0 || "${MOS_USE_RADIAL_CONSTRAINT}" == 1 ]] || die "MOS_USE_RADIAL_CONSTRAINT must be 0 or 1"
 
 parse_list() {
     local source="$1" kind="$2" valid_name="$3" output_name="$4" raw value
@@ -61,10 +72,22 @@ if [[ -n "${RESUME_DIR}" ]]; then
     [[ -d "${RESUME_DIR}" ]] || die "RESUME_DIR does not exist: ${RESUME_DIR}"
     OUTPUT_ROOT="$(cd "${RESUME_DIR}" && pwd)"
 else
-    OUTPUT_ROOT="${ROOT_DIR}/server_experiments/mos_baseline_matrix/$(date +%Y%m%d_%H%M%S)"
+    OUTPUT_ROOT="${ROOT_DIR}/server_experiments/${BASELINE_OUTPUT_GROUP:-mos_baseline_matrix}/$(date +%Y%m%d_%H%M%S)"
     [[ ! -e "${OUTPUT_ROOT}" ]] || die "refusing to overwrite: ${OUTPUT_ROOT}"; mkdir -p "${OUTPUT_ROOT}"
 fi
 mkdir -p "${ROOT_DIR}/data"
+# The FMNIST wrapper writes a frozen protocol manifest before any cell starts.
+# Resume is at cell level: failed attempts restart at round zero with fresh
+# attack state. No claim of model/optimizer checkpoint continuation is made.
+if [[ "${DATASET}" == fmnist ]]; then
+    manifest="$(printf 'dataset=%s\nprotocol=%s\nrounds=%s\npoisonedfl_scale_factor=%s\npoisonedfl_feedback_interval=%s\nmos=%s,%s,%s,%s\n' "${DATASET}" "${PROTOCOL}" "${ROUNDS}" "${POISONEDFL_SCALE_FACTOR}" "${POISONEDFL_FEEDBACK_INTERVAL}" "${MOS_OBJECTIVE_MODE}" "${MOS_ADAPTIVE_GUIDED_INIT}" "${MOS_BOUNDARY_ONLY}" "${MOS_USE_RADIAL_CONSTRAINT}"; cd "${ROOT_DIR}"; find config algorithms model utils -type f \( -name '*.yaml' -o -name '*.py' \) -print0 | sort -z | xargs -0 sha256sum; sha256sum main.py test.py run_mos_baselines_server.sh run_fmnist_modern_baselines_server.sh)"
+    if [[ -f "${OUTPUT_ROOT}/protocol.txt" ]]; then
+        [[ "$(cat "${OUTPUT_ROOT}/protocol.txt")" == "${manifest}" ]] || die "resume protocol/config mismatch; use a new output directory"
+    else
+        [[ -z "$(find "${OUTPUT_ROOT}" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "unlabeled resume directory is not empty"
+        printf '%s\n' "${manifest}" > "${OUTPUT_ROOT}/protocol.txt"
+    fi
+fi
 
 last_round_from_log() {
     [[ -f "$1" ]] || { printf ''; return; }
@@ -158,16 +181,29 @@ write_matrices() {
 
 rebuild_results() {
     local results="${OUTPUT_ROOT}/results_long.csv" cell status summary attack defense seed
+    local -a recorded_cells=()
     printf 'attack,defense,seed,target_rounds,observed_rounds,completed,exit_code,final_acc,last10_mean_acc,mean_acc,min_acc,runtime_seconds,error_hint,mean_A,last10_mean_A,mean_R,mean_CV,mean_alpha_feasible,attempt\n' > "${results}"
-    for defense in "${RUN_DEFENSES[@]}";do for attack in "${RUN_ATTACKS[@]}";do for seed in "${RUN_SEEDS[@]}";do
-      cell="${OUTPUT_ROOT}/${attack}/${defense}/seed_${seed}";status="${cell}/status.txt";summary="${cell}/summary.csv"
+    if [[ "${DATASET}" == fmnist ]]; then
+        # Preserve already completed cells when resuming only one matrix entry.
+        mapfile -t recorded_cells < <(find "${OUTPUT_ROOT}" -mindepth 3 -maxdepth 3 -type d -name 'seed_*' | sort)
+    else
+        for defense in "${RUN_DEFENSES[@]}";do for attack in "${RUN_ATTACKS[@]}";do for seed in "${RUN_SEEDS[@]}";do
+            recorded_cells+=("${OUTPUT_ROOT}/${attack}/${defense}/seed_${seed}")
+        done;done;done
+    fi
+    for cell in "${recorded_cells[@]}";do
+      status="${cell}/status.txt";summary="${cell}/summary.csv"
       [[ -f "${status}" && -f "${summary}" ]]||continue
       awk -F, -v sf="${status}" '
         BEGIN{while((getline line<sf)>0){p=index(line,"=");if(p){k=substr(line,1,p-1);s[k]=substr(line,p+1)}}close(sf)}
         NR==2{printf "%s,%s,%s,%s,%s,%d,%s,%s,%s,%s,%s,%s,\"%s\",%s,%s,%s,%s,%s,%s\n",$1,$2,$3,$4,$5,(s["status"]=="COMPLETED"),s["exit_code"],$6,$7,$8,$9,s["elapsed_seconds"],q(s["error_hint"]),$10,$11,$12,$13,$14,s["attempt"]}function q(v){gsub(/"/,"\"\"",v);return v}
       ' "${summary}" >> "${results}"
-    done;done;done
+    done
     write_matrices "${results}"
+    if [[ "${DATASET}" == fmnist ]]; then
+        # Keep historical metric column positions intact for shared matrix code.
+        awk -F, -v d="${DATASET}" -v p="${PROTOCOL}" -v sf="${POISONEDFL_SCALE_FACTOR}" -v e="${POISONEDFL_FEEDBACK_INTERVAL}" 'NR==1{print $0 ",dataset,protocol,model,num_users,num_selected_users,malicious_ratio,iid,defense_budget,poisonedfl_scale_factor,poisonedfl_feedback_interval";next}{budget=($2=="signguard"?"not_applicable":"legacy_default_10"); print $0 "," d "," p ",CNNFmnist,100,25,0.20,1," budget "," ($1=="poisonedfl_attack"?sf:"") "," ($1=="poisonedfl_attack"?e:"")}' "${results}" > "${OUTPUT_ROOT}/summary.csv"
+    fi
 }
 
 stop_heartbeat() {
@@ -187,6 +223,10 @@ finalize_current() {
     [[ -z "${LAST_SHELL_ERROR}" ]] || hint="${hint:+${hint}; }shell: ${LAST_SHELL_ERROR}"
     attempt="$(basename "${CURRENT_ATTEMPT_DIR}")";attempt="${attempt#attempt_}"
     write_summary "${CURRENT_ATTEMPT_DIR}/metrics.csv" "${CURRENT_ATTEMPT_DIR}/summary.csv" "${ROUNDS}"
+    if [[ "${DATASET}" == fmnist ]]; then
+        awk -v d="${DATASET}" -v p="${PROTOCOL}" 'NR==1{print $0 ",dataset,protocol";next}{print $0 "," d "," p}' "${CURRENT_ATTEMPT_DIR}/summary.csv" > "${CURRENT_ATTEMPT_DIR}/summary.tmp"
+        mv "${CURRENT_ATTEMPT_DIR}/summary.tmp" "${CURRENT_ATTEMPT_DIR}/summary.csv"
+    fi
     printf 'status=%s\nattack=%s\ndefense=%s\nseed=%s\ntarget_rounds=%s\nobserved_rounds=%s\nstart_time=%s\nend_time=%s\nelapsed_seconds=%s\nshell_pid=%s\npython_pid=%s\nhostname=%s\nGPU=%s\nexit_code=%s\nsignal=%s\nlast_round=%s\nerror_hint=%s\nshell_error=%s\nattempt=%s\ngit_commit=%s\n' "${status}" "${CURRENT_ATTACK}" "${CURRENT_DEFENSE}" "${CURRENT_SEED}" "${ROUNDS}" "${observed}" "${CURRENT_START_TIME}" "${end_time}" "${elapsed}" "$$" "${CURRENT_CHILD_PID}" "${HOST_NAME}" "${GPU}" "${code}" "${CURRENT_SIGNAL}" "${last_round}" "${hint}" "${LAST_SHELL_ERROR}" "${attempt}" "${GIT_COMMIT}" > "${CURRENT_ATTEMPT_DIR}/status.txt"
     [[ "${status}" == COMPLETED ]]||write_failure_diagnostics "${CURRENT_ATTEMPT_DIR}/failure_diagnostics.txt" "${code}" "${CURRENT_ATTEMPT_DIR}/train.log"
     sync_cell_artifacts "${CURRENT_ATTEMPT_DIR}" "${CURRENT_CELL_DIR}";rebuild_results;CURRENT_CHILD_PID=""
@@ -203,23 +243,47 @@ trap 'on_signal HUP 129' HUP
 
 next_attempt_dir(){ local n=1;while [[ -e "$1/attempt_${n}" ]];do ((n+=1));done;printf '%s/attempt_%s' "$1" "${n}"; }
 
+completed_config_matches() {
+    local cell="$1" attack="$2" command="${1}/command.txt" environment="${1}/environment.txt"
+    if [[ "${attack}" == poisonedfl_attack ]]; then
+        [[ -f "${environment}" ]] \
+          && grep -Fqx "POISONEDFL_SCALE_FACTOR=${POISONEDFL_SCALE_FACTOR}" "${environment}" \
+          && grep -Fqx "POISONEDFL_FEEDBACK_INTERVAL=${POISONEDFL_FEEDBACK_INTERVAL}" "${environment}"
+        return $?
+    fi
+    [[ "${attack}" == mos_attack && -n "${MOS_RUN_VARIANT}" ]] || return 0
+    [[ -f "${command}" && -f "${environment}" ]] \
+      && grep -Fqx "MOS_RUN_VARIANT=${MOS_RUN_VARIANT}" "${environment}" \
+      && grep -Eq -- '--mos_objective_mode[[:space:]]+'"${MOS_OBJECTIVE_MODE}"'([[:space:]]|$)' "${command}" \
+      && grep -Eq -- '--mos_boundary_only[[:space:]]+'"${MOS_BOUNDARY_ONLY}"'([[:space:]]|$)' "${command}" \
+      && grep -Eq -- '--mos_adaptive_guided_init[[:space:]]+'"${MOS_ADAPTIVE_GUIDED_INIT}"'([[:space:]]|$)' "${command}" \
+      && grep -Eq -- '--mos_use_radial_constraint[[:space:]]+'"${MOS_USE_RADIAL_CONSTRAINT}"'([[:space:]]|$)' "${command}"
+}
+
 run_one() {
     local attack="$1" defense="$2" seed="$3" cell="${OUTPUT_ROOT}/$1/$2/seed_$3" attempt config_file fifo train_status=0 final_status
+    local defense_budget=not_applicable
+    [[ "${defense}" != multi_krum && "${defense}" != tr_mean ]] || defense_budget=legacy_default_10
     RUN_ONE_FAILED=0
     if [[ -f "${cell}/status.txt" ]] \
        && grep -qx 'status=COMPLETED' "${cell}/status.txt" \
        && grep -qx "target_rounds=${ROUNDS}" "${cell}/status.txt" \
-       && awk -F= -v rounds="${ROUNDS}" '$1=="observed_rounds" && $2+0>=rounds{ok=1}END{exit !ok}' "${cell}/status.txt"; then
+       && awk -F= -v rounds="${ROUNDS}" '$1=="observed_rounds" && $2+0>=rounds{ok=1}END{exit !ok}' "${cell}/status.txt" \
+       && completed_config_matches "${cell}" "${attack}"; then
         printf 'Skipping completed cell: attack=%s defense=%s seed=%s\n' "${attack}" "${defense}" "${seed}";return 0
     fi
     mkdir -p "${cell}";attempt="$(next_attempt_dir "${cell}")";mkdir -p "${attempt}/config";cp -R "${ROOT_DIR}/config/." "${attempt}/config/"
-    config_file="${attempt}/config/attack/cifar/basee.yaml";sed -i -E "s/^round:[[:space:]]*[0-9]+.*/round: ${ROUNDS} # rounds of training/" "${config_file}";ln -s "${ROOT_DIR}/data" "${attempt}/data"
-    local -a command=("${PYTHON_BIN}" -u "${ROOT_DIR}/main.py" --dataset cifar --num_attackers 20 --attack "${attack}" --defend1 "${defense}" --seed "${seed}" --gpu "${GPU}" --repeat 1)
-    if [[ "${attack}" == mos_attack ]];then command+=(--mos_adaptive_guided_init "${MOS_ADAPTIVE_GUIDED_INIT}" --mos_constraint_mode strict --mos_objective_mode "${MOS_OBJECTIVE_MODE}" --mos_boundary_only "${MOS_BOUNDARY_ONLY}");fi
+    config_file="${attempt}/config/attack/${DATASET}/basee.yaml";sed -i -E "s/^round:[[:space:]]*[0-9]+.*/round: ${ROUNDS} # rounds of training/" "${config_file}";ln -s "${ROOT_DIR}/data" "${attempt}/data"
+    local -a command=("${PYTHON_BIN}" -u "${ROOT_DIR}/main.py" --dataset "${DATASET}" --num_attackers 20 --attack "${attack}" --defend1 "${defense}" --seed "${seed}" --gpu "${GPU}" --repeat 1)
+    if [[ "${DATASET}" == fmnist ]]; then command+=(--freeze_datasplit 1); fi
+    if [[ "${attack}" == poisonedfl_attack ]]; then command+=(--poisonedfl_scale_factor "${POISONEDFL_SCALE_FACTOR}" --poisonedfl_feedback_interval "${POISONEDFL_FEEDBACK_INTERVAL}"); fi
+    if [[ "${attack}" == mos_attack ]];then command+=(--mos_adaptive_guided_init "${MOS_ADAPTIVE_GUIDED_INIT}" --mos_constraint_mode strict --mos_objective_mode "${MOS_OBJECTIVE_MODE}" --mos_boundary_only "${MOS_BOUNDARY_ONLY}" --mos_use_radial_constraint "${MOS_USE_RADIAL_CONSTRAINT}");fi
     { printf 'cd %q\n' "${attempt}";printf 'PYTHONPATH=%q ' "${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}";printf '%q ' "${command[@]}";printf '\n';} > "${attempt}/command.txt"
     {
-        printf 'ATTACK=%s\nDEFENSE=%s\nSEED=%s\nGPU=%s\nROUNDS=%s\nDATASET=cifar\nNUM_ATTACKERS=20\nREPEAT=1\nHOSTNAME=%s\nGIT_COMMIT=%s\n' "${attack}" "${defense}" "${seed}" "${GPU}" "${ROUNDS}" "${HOST_NAME}" "${GIT_COMMIT}"
-        printf 'MOS_ADAPTIVE_GUIDED_INIT=%s\nMOS_CONSTRAINT_MODE=%s\nMOS_OBJECTIVE_MODE=%s\nMOS_BOUNDARY_ONLY=%s\n' "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_ADAPTIVE_GUIDED_INIT}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf strict||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_OBJECTIVE_MODE}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_BOUNDARY_ONLY}"||printf '')"
+        printf 'ATTACK=%s\nDEFENSE=%s\nSEED=%s\nGPU=%s\nROUNDS=%s\nDATASET=%s\nNUM_ATTACKERS=20\nREPEAT=1\nHOSTNAME=%s\nGIT_COMMIT=%s\n' "${attack}" "${defense}" "${seed}" "${GPU}" "${ROUNDS}" "${DATASET}" "${HOST_NAME}" "${GIT_COMMIT}"
+        printf 'PROTOCOL=%s\nDEFENSE_BUDGET=%s\nPOISONEDFL_SCALE_FACTOR=%s\nPOISONEDFL_FEEDBACK_INTERVAL=%s\nPOISONEDFL_SCALE_DECAY=0.7\nPOISONEDFL_MIN_SCALE=0.5\nPOISONEDFL_K99=normal_approximation\nPOISONEDFL_WARMUP=zero_trainable_first_round\nPOISONEDFL_SOURCE_COMMIT=266488e2cbe5953aab61712f315518546f457e55\nPYTHON_BIN=%s\n' "${PROTOCOL}" "${defense_budget}" "${POISONEDFL_SCALE_FACTOR}" "${POISONEDFL_FEEDBACK_INTERVAL}" "${PYTHON_BIN}"
+        if [[ "${DATASET}" == fmnist ]]; then cat "${OUTPUT_ROOT}/protocol.txt"; fi
+        printf 'MOS_RUN_VARIANT=%s\nMOS_ADAPTIVE_GUIDED_INIT=%s\nMOS_CONSTRAINT_MODE=%s\nMOS_OBJECTIVE_MODE=%s\nMOS_BOUNDARY_ONLY=%s\nMOS_USE_RADIAL_CONSTRAINT=%s\n' "${MOS_RUN_VARIANT}" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_ADAPTIVE_GUIDED_INIT}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf strict||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_OBJECTIVE_MODE}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_BOUNDARY_ONLY}"||printf '')" "$([[ "${attack}" == mos_attack ]]&&printf "${MOS_USE_RADIAL_CONSTRAINT}"||printf '')"
         printf 'GIT_STATUS_BEGIN\n';git -C "${ROOT_DIR}" status --short 2>/dev/null||true;printf 'GIT_STATUS_END\n'
     } > "${attempt}/environment.txt"
     CURRENT_ATTACK="${attack}";CURRENT_DEFENSE="${defense}";CURRENT_SEED="${seed}";CURRENT_CELL_DIR="${cell}";CURRENT_ATTEMPT_DIR="${attempt}";CURRENT_START_EPOCH="$(date +%s)";CURRENT_START_TIME="$(timestamp)";CURRENT_SIGNAL="";CURRENT_FINALIZED=0;LAST_SHELL_ERROR=""
